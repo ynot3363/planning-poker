@@ -1,0 +1,40 @@
+{
+  "$schema": "https://developer.microsoft.com/json-schemas/spfx-build/package-solution.schema.json",
+  "solution": {
+    "name": "planning-poker-client-side-solution",
+    "id": "98ebcf85-f47b-4ae7-b0b1-248bbc8b2f1f",
+    "version": "1.0.0.0",
+    "includeClientSideAssets": true,
+    "skipFeatureDeployment": true,
+    "isDomainIsolated": false,
+    "developer": {
+      "name": "Anthony Poulin",
+      "websiteUrl": "https://www.anthonyepoulin.com",
+      "privacyUrl": "",
+      "termsOfUseUrl": "",
+      "mpnId": ""
+    },
+    "metadata": {
+      "shortDescription": {
+        "default": "Collaborative planning poker and story estimation for SharePoint teams."
+      },
+      "longDescription": {
+        "default": "Run team story estimation in SharePoint with collaborative voting sessions, managed story lists, and Fluid-powered live state."
+      },
+      "screenshotPaths": [],
+      "videoUrl": "",
+      "categories": []
+    },
+    "features": [
+      {
+        "title": "Story Points Collaboration",
+        "description": "Activates the Story Points web part for collaborative planning poker and story estimation in SharePoint.",
+        "id": "1505ff1c-012b-42c1-8bf6-ae9727d3e1f7",
+        "version": "1.0.0.0"
+      }
+    ]
+  },
+  "paths": {
+    "zippedPackage": "solution/planning-poker.sppkg"
+  }
+}

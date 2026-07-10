@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub Workflows"
+  short_description: "Plan, implement, review, and release on GitHub"
+  default_prompt: "Use $github to complete this GitHub repository workflow safely."

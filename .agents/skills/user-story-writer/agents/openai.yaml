@@ -1,0 +1,4 @@
+interface:
+  display_name: "User Story Writer"
+  short_description: "Craft repository-standard user stories"
+  default_prompt: "Use $user-story-writer to draft or refine a component user story."

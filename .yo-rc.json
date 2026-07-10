@@ -1,0 +1,19 @@
+{
+  "@microsoft/generator-sharepoint": {
+    "useGulp": false,
+    "plusBeta": false,
+    "isCreatingSolution": true,
+    "nodeVersion": "22.23.1",
+    "sdksVersions": {},
+    "version": "1.23.2",
+    "libraryName": "planning-poker",
+    "libraryId": "98ebcf85-f47b-4ae7-b0b1-248bbc8b2f1f",
+    "environment": "spo",
+    "packageManager": "npm",
+    "solutionName": "planning-poker",
+    "solutionShortDescription": "planning-poker description",
+    "skipFeatureDeployment": true,
+    "isDomainIsolated": false,
+    "componentType": "webpart"
+  }
+}

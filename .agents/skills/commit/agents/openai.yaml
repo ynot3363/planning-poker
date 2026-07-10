@@ -1,0 +1,4 @@
+interface:
+  display_name: "Commit Changes"
+  short_description: "Create focused, validated repository commits"
+  default_prompt: "Use $commit to validate, stage, and commit the completed work."
