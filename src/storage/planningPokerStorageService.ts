@@ -106,10 +106,12 @@ export class PlanningPokerStorageService implements IPlanningPokerStorageService
         'You need site list-management permission to configure Planning Poker storage.'
       );
     }
-    const list = (await this.findLibrary()) ?? (await this.createLibrary());
+    const discoveredList = (await this.findLibrary()) ?? (await this.createLibrary());
+    const list = await this.waitForLibraryRoot(discoveredList);
     await this.ensureFields(list);
+    const configuration = await this.createConfiguration(list);
     await this.hideLibrary(list);
-    return this.createConfiguration(list);
+    return configuration;
   }
 
   /**
@@ -147,6 +149,31 @@ export class PlanningPokerStorageService implements IPlanningPokerStorageService
         'Planning Poker application data. Hidden infrastructure, not a security boundary.',
       AllowContentTypes: false
     });
+  }
+
+  /**
+   * Waits until SharePoint returns the newly created library's root folder.
+   *
+   * @param list - The discovered or newly created library.
+   * @returns The hydrated library with a readable root folder.
+   * @throws Throws when the root folder remains unavailable after bounded retries.
+   */
+  private async waitForLibraryRoot(list: ISharePointList): Promise<ISharePointList> {
+    if (list.RootFolder?.ServerRelativeUrl !== undefined) {
+      return list;
+    }
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const hydratedList = await this.getList(list.Id);
+        if (hydratedList.RootFolder?.ServerRelativeUrl !== undefined) {
+          return hydratedList;
+        }
+      } catch {
+        // A new library can be temporarily unreadable while SharePoint finishes provisioning it.
+      }
+      await this.retryDelay(attempt);
+    }
+    throw new Error('The Planning Poker library root folder was not available after provisioning.');
   }
 
   /**

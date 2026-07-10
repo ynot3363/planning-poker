@@ -77,9 +77,10 @@ describe('PlanningPokerStorageService', () => {
     });
   });
 
-  it('repairs fields, hides the library, and retries delayed drive discovery', async () => {
+  it('repairs fields, resolves the drive, and then hides the library', async () => {
     let fieldReadCount = 0;
     let driveReadCount = 0;
+    const provisioningOrder: string[] = [];
     const getImplementation = jest.fn(async (path: string): Promise<unknown> => {
       if (path.includes('effectiveBasePermissions')) {
         return { d: { EffectiveBasePermissions: { High: '0', Low: '2048' } } };
@@ -107,6 +108,7 @@ describe('PlanningPokerStorageService', () => {
             };
       }
       if (path.includes('_api/v2.1/drives')) {
+        provisioningOrder.push('resolve-drive');
         driveReadCount += 1;
         return driveReadCount === 1
           ? { value: [] }
@@ -114,9 +116,12 @@ describe('PlanningPokerStorageService', () => {
       }
       throw new Error(`Unexpected test path: ${path}`);
     });
-    const postImplementation = jest.fn(
-      async (_path: string, _body?: unknown): Promise<unknown> => undefined
-    );
+    const postImplementation = jest.fn(async (_path: string, body?: unknown): Promise<unknown> => {
+      if (typeof body === 'object' && body !== null && 'Hidden' in body && body.Hidden === true) {
+        provisioningOrder.push('hide-library');
+      }
+      return undefined;
+    });
     const retryDelay = jest.fn(async (): Promise<void> => undefined);
     const service = new PlanningPokerStorageService(
       createTransport(getImplementation, postImplementation),
@@ -137,6 +142,7 @@ describe('PlanningPokerStorageService', () => {
       "_api/web/lists('list-id')",
       expect.objectContaining({ Hidden: true, OnQuickLaunch: false })
     );
+    expect(provisioningOrder[provisioningOrder.length - 1]).toBe('hide-library');
     const fieldBodies = postImplementation.mock.calls
       .map(([, body]) => body)
       .filter((body): body is Record<string, unknown> => typeof body === 'object' && body !== null);
@@ -155,6 +161,68 @@ describe('PlanningPokerStorageService', () => {
       expect.objectContaining({ AllowMultipleValues: true })
     );
     expect(retryDelay).toHaveBeenCalledWith(0);
+  });
+
+  it('hydrates a newly created library before resolving its drive and hiding it', async () => {
+    const provisioningOrder: string[] = [];
+    const getImplementation = jest.fn(async (path: string): Promise<unknown> => {
+      if (path.includes('effectiveBasePermissions')) {
+        return { High: 0, Low: 0x00000800 };
+      }
+      if (path.includes('lists?$select')) {
+        return { value: [] };
+      }
+      if (path.includes("lists('new-list')?$select")) {
+        provisioningOrder.push('hydrate-root');
+        return {
+          Id: 'new-list',
+          Title: 'PlanningPokerAppData',
+          RootFolder: { ServerRelativeUrl: '/sites/team/PlanningPokerAppData' }
+        };
+      }
+      if (path.includes('/fields')) {
+        return {
+          value: SHAREPOINT_METADATA_FIELDS.map((field, index) => ({
+            Title: field.displayName,
+            InternalName: `Field${index}`
+          }))
+        };
+      }
+      if (path.includes('_api/v2.1/drives')) {
+        provisioningOrder.push('resolve-drive');
+        return { value: [{ id: 'drive-id', sharepointIds: { listId: 'new-list' } }] };
+      }
+      throw new Error(`Unexpected test path: ${path}`);
+    });
+    const postImplementation = jest.fn(async (path: string, body?: unknown): Promise<unknown> => {
+      if (path === '_api/web/lists') {
+        provisioningOrder.push('create-library');
+        return { Id: 'new-list', Title: 'PlanningPokerAppData' };
+      }
+      if (typeof body === 'object' && body !== null && 'Hidden' in body && body.Hidden === true) {
+        provisioningOrder.push('hide-library');
+      }
+      return undefined;
+    });
+    const service = new PlanningPokerStorageService(
+      createTransport(getImplementation, postImplementation),
+      {
+        webAbsoluteUrl: 'https://example.sharepoint.com/sites/team',
+        metadataFields: SHAREPOINT_METADATA_FIELDS,
+        retryDelay: async () => undefined
+      }
+    );
+
+    await expect(service.provision()).resolves.toMatchObject({
+      driveId: 'drive-id',
+      serverRelativeUrl: '/sites/team/PlanningPokerAppData'
+    });
+    expect(provisioningOrder).toEqual([
+      'create-library',
+      'hydrate-root',
+      'resolve-drive',
+      'hide-library'
+    ]);
   });
 
   it('blocks provisioning when Manage Lists permission is absent', async () => {
