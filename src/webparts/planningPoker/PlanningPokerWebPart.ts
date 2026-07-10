@@ -6,96 +6,116 @@ import {
   PropertyPaneTextField
 } from '@microsoft/sp-property-pane';
 import { BaseClientSideWebPart } from '@microsoft/sp-webpart-base';
-import { IReadonlyTheme } from '@microsoft/sp-component-base';
+import type { IReadonlyTheme } from '@microsoft/sp-component-base';
+import { PlanningPokerStorageService } from '../../storage/planningPokerStorageService';
+import { SpHttpTransport } from '../../storage/spHttpTransport';
+import type { IPlanningPokerStorageConfiguration } from '../../storage/storageTypes';
+import { SHAREPOINT_METADATA_FIELDS } from '../../domain/planningPokerDomain';
 
 import * as strings from 'PlanningPokerWebPartStrings';
 import PlanningPoker from './components/PlanningPoker';
-import { IPlanningPokerProps } from './components/IPlanningPokerProps';
+import type { IPlanningPokerProps } from './components/PlanningPoker';
 
+/** Defines validated properties persisted with a Planning Poker web-part instance. */
 export interface IPlanningPokerWebPartProps {
+  /** Searchable plain-text description maintained by page authors. */
   description: string;
+  /** The site-scoped storage configuration after successful provisioning. */
+  storageConfiguration?: IPlanningPokerStorageConfiguration;
 }
 
+/** Initializes SharePoint services and owns the Planning Poker React root. */
 export default class PlanningPokerWebPart extends BaseClientSideWebPart<IPlanningPokerWebPartProps> {
+  private _storageService: PlanningPokerStorageService | undefined;
+  private _theme?: IReadonlyTheme;
+  private _storageInitializationError?: string;
 
-  private _isDarkTheme: boolean = false;
-  private _environmentMessage: string = '';
-
+  /** @returns `void` after rendering the initialized React tree. */
   public render(): void {
-    const element: React.ReactElement<IPlanningPokerProps> = React.createElement(
-      PlanningPoker,
-      {
-        description: this.properties.description,
-        isDarkTheme: this._isDarkTheme,
-        environmentMessage: this._environmentMessage,
-        userDisplayName: this.context.pageContext.user.displayName
-      }
-    );
+    if (this._storageService === undefined) {
+      this.domElement.textContent = 'Planning Poker is still initializing.';
+      return;
+    }
+    const element: React.ReactElement<IPlanningPokerProps> = React.createElement(PlanningPoker, {
+      storageConfiguration: this.properties.storageConfiguration,
+      storageService: this._storageService,
+      onStorageConfigured: this.onStorageConfigured,
+      theme: this._theme,
+      storageInitializationError: this._storageInitializationError
+    });
 
     ReactDom.render(element, this.domElement);
   }
 
-  protected onInit(): Promise<void> {
-    return this._getEnvironmentMessage().then(message => {
-      this._environmentMessage = message;
-    });
-  }
-
-
-
-  private _getEnvironmentMessage(): Promise<string> {
-    if (!!this.context.sdks.microsoftTeams) { // running in Teams, office.com or Outlook
-      return this.context.sdks.microsoftTeams.teamsJs.app.getContext()
-        .then(context => {
-          let environmentMessage: string = '';
-          switch (context.app.host.name) {
-            case 'Office': // running in Office
-              environmentMessage = this.context.isServedFromLocalhost ? strings.AppLocalEnvironmentOffice : strings.AppOfficeEnvironment;
-              break;
-            case 'Outlook': // running in Outlook
-              environmentMessage = this.context.isServedFromLocalhost ? strings.AppLocalEnvironmentOutlook : strings.AppOutlookEnvironment;
-              break;
-            case 'Teams': // running in Teams
-            case 'TeamsModern':
-              environmentMessage = this.context.isServedFromLocalhost ? strings.AppLocalEnvironmentTeams : strings.AppTeamsTabEnvironment;
-              break;
-            default:
-              environmentMessage = strings.UnknownEnvironment;
-          }
-
-          return environmentMessage;
-        });
+  /**
+   * Initializes the site-scoped storage service and first-render SharePoint data.
+   *
+   * @returns A promise that resolves when the web part can render meaningful UI.
+   */
+  protected async onInit(): Promise<void> {
+    await super.onInit();
+    this._storageService = new PlanningPokerStorageService(
+      new SpHttpTransport(this.context.spHttpClient, this.context.pageContext.web.absoluteUrl),
+      {
+        webAbsoluteUrl: this.context.pageContext.web.absoluteUrl,
+        metadataFields: SHAREPOINT_METADATA_FIELDS
+      }
+    );
+    try {
+      const saved = await this._storageService.validateConfiguration(
+        this.properties.storageConfiguration
+      );
+      this.properties.storageConfiguration =
+        saved.configuration ?? (await this._storageService.findConfiguration());
+    } catch {
+      this._storageInitializationError =
+        'Planning Poker storage could not be checked. Verify the SharePoint connection and try again.';
     }
-
-    return Promise.resolve(this.context.isServedFromLocalhost ? strings.AppLocalEnvironmentSharePoint : strings.AppSharePointEnvironment);
   }
 
+  /**
+   * Applies newly provisioned storage to the current web-part instance.
+   *
+   * @param configuration - The validated site storage configuration.
+   * @returns `void` after re-rendering the configured experience.
+   */
+  private onStorageConfigured = (configuration: IPlanningPokerStorageConfiguration): void => {
+    this.properties.storageConfiguration = configuration;
+    this.render();
+  };
+
+  /**
+   * Synchronizes SharePoint theme changes with React and CSS custom properties.
+   *
+   * @param currentTheme - The current SharePoint theme, when available.
+   * @returns `void` after applying supported semantic colors.
+   */
   protected onThemeChanged(currentTheme: IReadonlyTheme | undefined): void {
     if (!currentTheme) {
       return;
     }
 
-    this._isDarkTheme = !!currentTheme.isInverted;
-    const {
-      semanticColors
-    } = currentTheme;
+    this._theme = currentTheme;
+    const { semanticColors } = currentTheme;
 
     if (semanticColors) {
       this.domElement.style.setProperty('--bodyText', semanticColors.bodyText || null);
       this.domElement.style.setProperty('--link', semanticColors.link || null);
       this.domElement.style.setProperty('--linkHovered', semanticColors.linkHovered || null);
     }
-
   }
 
+  /** @returns `void` after unmounting the owned React tree. */
   protected onDispose(): void {
     ReactDom.unmountComponentAtNode(this.domElement);
   }
 
+  /** @returns The current serialized web-part data version. */
   protected get dataVersion(): Version {
     return Version.parse('1.0');
   }
 
+  /** @returns The authoring controls for editable web-part properties. */
   protected getPropertyPaneConfiguration(): IPropertyPaneConfiguration {
     return {
       pages: [
