@@ -1,6 +1,6 @@
 import * as React from 'react';
 import * as ReactDom from 'react-dom';
-import { Version } from '@microsoft/sp-core-library';
+import { DisplayMode, Version } from '@microsoft/sp-core-library';
 import {
   type IPropertyPaneConfiguration,
   PropertyPaneTextField
@@ -36,12 +36,28 @@ export default class PlanningPokerWebPart extends BaseClientSideWebPart<IPlannin
       this.domElement.textContent = 'Planning Poker is still initializing.';
       return;
     }
+    const userEmail = this.context.pageContext.user.email.trim();
+    const userUpn =
+      userEmail.length > 0
+        ? userEmail
+        : this.context.pageContext.user.loginName.replace(/^.*\|/, '').trim();
+    const imageUrl =
+      userUpn.length === 0
+        ? undefined
+        : `${this.context.pageContext.web.absoluteUrl.replace(/\/$/, '')}/_layouts/15/userphoto.aspx?size=S&accountname=${encodeURIComponent(userUpn)}`;
     const element: React.ReactElement<IPlanningPokerProps> = React.createElement(PlanningPoker, {
       storageConfiguration: this.properties.storageConfiguration,
       storageService: this._storageService,
       onStorageConfigured: this.onStorageConfigured,
+      isPageEditMode: this.displayMode === DisplayMode.Edit,
       theme: this._theme,
-      storageInitializationError: this._storageInitializationError
+      storageInitializationError: this._storageInitializationError,
+      currentUser: {
+        displayName: this.context.pageContext.user.displayName,
+        upn: userUpn,
+        imageUrl
+      },
+      serviceScope: this.context.serviceScope
     });
 
     ReactDom.render(element, this.domElement);
@@ -54,7 +70,7 @@ export default class PlanningPokerWebPart extends BaseClientSideWebPart<IPlannin
    */
   protected async onInit(): Promise<void> {
     await super.onInit();
-    this._storageService = new PlanningPokerStorageService(
+    const storageService = new PlanningPokerStorageService(
       new SpHttpTransport(this.context.spHttpClient, this.context.pageContext.web.absoluteUrl),
       {
         webAbsoluteUrl: this.context.pageContext.web.absoluteUrl,
@@ -62,14 +78,17 @@ export default class PlanningPokerWebPart extends BaseClientSideWebPart<IPlannin
       }
     );
     try {
-      const saved = await this._storageService.validateConfiguration(
+      const saved = await storageService.validateConfiguration(
         this.properties.storageConfiguration
       );
       this.properties.storageConfiguration =
-        saved.configuration ?? (await this._storageService.findConfiguration());
+        saved.configuration ?? (await storageService.findConfiguration());
     } catch {
       this._storageInitializationError =
         'Planning Poker storage could not be checked. Verify the SharePoint connection and try again.';
+    } finally {
+      // Keep render behind discovery so an early host render cannot flash the setup experience.
+      this._storageService = storageService;
     }
   }
 
@@ -80,7 +99,12 @@ export default class PlanningPokerWebPart extends BaseClientSideWebPart<IPlannin
    * @returns `void` after re-rendering the configured experience.
    */
   private onStorageConfigured = (configuration: IPlanningPokerStorageConfiguration): void => {
+    if (this.displayMode !== DisplayMode.Edit) {
+      return;
+    }
     this.properties.storageConfiguration = configuration;
+    this._storageInitializationError = undefined;
+    this.context.propertyPane.refresh();
     this.render();
   };
 

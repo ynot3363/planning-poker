@@ -281,7 +281,7 @@ export class PlanningPokerStorageService implements IPlanningPokerStorageService
   private async resolveDrive(list: ISharePointList): Promise<ISharePointDrive> {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const drives = await this.getPagedCollection<ISharePointDrive>(
-        '_api/v2.1/drives?$select=id,name,webUrl,sharepointIds'
+        '_api/v2.1/drives?$select=id,name,webUrl,sharepointIds,system'
       );
       const drive = findDrive(drives, list);
       if (drive !== undefined) {

@@ -97,6 +97,7 @@ implementation story catalog.
 ## Architecture And Standards
 
 - [Architecture](docs/architecture.md)
+- [Application shell and deep links](docs/application-shell.md)
 - [Coding standards](docs/coding-standards.md)
 - [User story standards](docs/USER_STORY_STANDARDS.md)
 - [Commit standards](docs/COMMIT_STANDARDS.md)

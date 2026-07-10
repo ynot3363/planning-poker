@@ -13,6 +13,20 @@ export interface IPlanningPokerRoute {
   readonly focusedVoting: boolean;
 }
 
+/** Describes a safe routing fallback that should be explained to the user. */
+export type PlanningPokerRouteNotice =
+  | 'invalid-view'
+  | 'invalid-identifier'
+  | 'incomplete-voting-link';
+
+/** Combines validated route state with an optional non-sensitive fallback reason. */
+export interface IPlanningPokerRouteResult {
+  /** The route that the application can render safely. */
+  readonly route: IPlanningPokerRoute;
+  /** The reason untrusted route values could not be used, when applicable. */
+  readonly notice?: PlanningPokerRouteNotice;
+}
+
 const VIEW_PARAMETER = 'planningPokerView';
 const TEAM_PARAMETER = 'planningPokerTeam';
 const SESSION_PARAMETER = 'planningPokerSession';
@@ -34,25 +48,57 @@ function parseIdentifier(value: unknown): string | undefined {
  * @param search - The current query string, with or without a leading question mark.
  * @returns A validated route that safely falls back to the teams view.
  */
-export function parsePlanningPokerRoute(search: string): IPlanningPokerRoute {
+export function readPlanningPokerRoute(search: string): IPlanningPokerRouteResult {
   const parameters = new URLSearchParams(search);
   const requestedView = parameters.get(VIEW_PARAMETER);
-  const teamId = parseIdentifier(parameters.get(TEAM_PARAMETER));
-  const sessionId = parseIdentifier(parameters.get(SESSION_PARAMETER));
+  const requestedTeamId = parameters.get(TEAM_PARAMETER);
+  const requestedSessionId = parameters.get(SESSION_PARAMETER);
+  const teamId = parseIdentifier(requestedTeamId);
+  const sessionId = parseIdentifier(requestedSessionId);
   const focusedVoting = teamId !== undefined && sessionId !== undefined;
+  const isKnownView =
+    requestedView === null ||
+    requestedView === 'Teams' ||
+    requestedView === 'Stories' ||
+    requestedView === 'Voting' ||
+    requestedView === 'About';
+  let notice: PlanningPokerRouteNotice | undefined;
+  if (!isKnownView) {
+    notice = 'invalid-view';
+  } else if (
+    (requestedTeamId !== null && teamId === undefined) ||
+    (requestedSessionId !== null && sessionId === undefined)
+  ) {
+    notice = 'invalid-identifier';
+  } else if ((teamId === undefined) !== (sessionId === undefined)) {
+    notice = 'incomplete-voting-link';
+  }
   return {
-    view:
-      focusedVoting || requestedView === 'Voting'
-        ? 'Voting'
-        : requestedView === 'Stories'
-          ? 'Stories'
-          : requestedView === 'About'
-            ? 'About'
-            : 'Teams',
-    teamId,
-    sessionId,
-    focusedVoting
+    route: {
+      view:
+        focusedVoting || requestedView === 'Voting'
+          ? 'Voting'
+          : requestedView === 'Stories'
+            ? 'Stories'
+            : requestedView === 'About'
+              ? 'About'
+              : 'Teams',
+      teamId,
+      sessionId,
+      focusedVoting
+    },
+    notice
   };
+}
+
+/**
+ * Parses namespaced query parameters into safe Planning Poker route state.
+ *
+ * @param search - The current query string, with or without a leading question mark.
+ * @returns The validated route, falling back to Teams when necessary.
+ */
+export function parsePlanningPokerRoute(search: string): IPlanningPokerRoute {
+  return readPlanningPokerRoute(search).route;
 }
 
 /**

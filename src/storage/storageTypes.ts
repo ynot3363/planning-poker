@@ -92,6 +92,8 @@ export interface ISharePointDrive {
   readonly webUrl?: string;
   /** The optional identifiers that connect the drive to SharePoint. */
   readonly sharepointIds?: { readonly listId?: string };
+  /** Identifies a hidden system drive that is omitted unless explicitly selected. */
+  readonly system?: Record<string, never>;
 }
 
 /** Abstracts authenticated SharePoint JSON requests for service testing. */

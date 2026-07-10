@@ -1,15 +1,8 @@
-.content {
-  box-sizing: border-box;
-  color: '[theme:bodyText, default: #323130]';
-  color: var(--bodyText);
-  inline-size: 100%;
-  padding: 16px;
-}
-
 .configuration {
+  --planning-poker-configuration-border: '[theme:neutralLight, default: #edebe9]';
   align-items: flex-start;
   background: '[theme:white, default: #ffffff]';
-  border: 1px solid '[theme:neutralLight, default: #edebe9]';
+  border: 1px solid var(--planning-poker-configuration-border);
   border-radius: 12px;
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
   box-sizing: border-box;
@@ -23,9 +16,10 @@
 }
 
 .storageGraphic {
+  --planning-poker-storage-border: '[theme:themeLighter, default: #deecf9]';
   align-items: center;
   background: '[theme:themeLighterAlt, default: #eff6fc]';
-  border: 1px solid '[theme:themeLighter, default: #deecf9]';
+  border: 1px solid var(--planning-poker-storage-border);
   border-radius: 50%;
   display: flex;
   flex: 0 0 72px;

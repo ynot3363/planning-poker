@@ -11,7 +11,10 @@ configuration.
 At initialization, discover a site library titled `PlanningPokerAppData`. If it is
 missing or its saved configuration is invalid, render a dedicated configuration
 experience instead of the application. Provisioning is explicit and available
-only when SharePoint reports that the current user can create/manage lists.
+only while the SharePoint page is in edit mode and SharePoint reports that the
+current user can create/manage lists. In view mode, explain that a page author
+must edit the page, configure storage, and save or publish the page so the web
+part property bag is retained.
 
 Provision a hidden document library, the metadata from US-001, and library-level
 permissions that preserve higher roles while granting every SharePoint group
@@ -49,8 +52,12 @@ Expose typed contracts equivalent to:
 - The create button is disabled when the current user lacks SharePoint's
   list-management permission, and the screen states that someone with Edit
   permissions to the site must configure the web part.
+- The create button is disabled in SharePoint view mode, and the screen explains
+  that configuration must occur in edit mode before the page is saved or
+  published.
 - Permission capability comes from SharePoint base permissions at the time of
-  provisioning, not page mode, group names, or a client-maintained role.
+  provisioning, not group names or a client-maintained role. Page mode is a
+  property-persistence lifecycle gate, not an authorization decision.
 - Provisioning creates a document library with base template `101`, waits until
   its root folder is readable, and hides it from normal navigation and library
   UI entry points supported by SharePoint.
@@ -64,7 +71,8 @@ Expose typed contracts equivalent to:
 - The implementation documents that hiding the library is discoverability
   reduction, not security.
 - ODSP resolution enumerates the site's v2 drive collection, matches by list ID
-  with URL/name fallbacks, and uses bounded retry for propagation delay.
+  with URL/name fallbacks, explicitly selects hidden system drives, and uses
+  bounded retry for propagation delay.
 - Successful provisioning persists list ID, drive ID, title, server-relative
   URL, absolute web URL, provisioning version, and field mapping in the web
   part's property bag before entering the application.
@@ -85,7 +93,10 @@ Expose typed contracts equivalent to:
 - Test that stronger permissions are preserved and lower group permissions are
   upgraded without duplicate role assignments.
 - Component-test configuration loading, unauthorized, provisioning, retry,
-  success, and error states with keyboard and accessible status announcements.
+  success, error, and edit/view page-mode states with keyboard and accessible
+  status announcements.
+- Regression-test saved-configuration validation after the storage library has
+  been hidden and returned as a system drive.
 
 ## Documentation and Examples
 
@@ -107,6 +118,8 @@ Expose typed contracts equivalent to:
 
 - Keep provisioning in a SharePoint service; React must not build REST URLs.
 - Match drives by `sharepointIds.listId` first, then normalized URL or name.
+- Select the drive `system` facet so hidden libraries remain discoverable during
+  initialization and saved-configuration validation.
 - Treat the well-known title as discovery input but persist immutable IDs after
   discovery.
 - Do not place tokens, personal data, or secrets in web part properties.

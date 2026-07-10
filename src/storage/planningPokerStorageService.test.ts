@@ -75,6 +75,64 @@ describe('PlanningPokerStorageService', () => {
       driveId: 'drive-id',
       lastValidatedAt: '2026-07-10T00:00:00.000Z'
     });
+    expect(
+      getImplementation.mock.calls.find(([path]) => path.includes('_api/v2.1/drives'))?.[0]
+    ).toContain('system');
+  });
+
+  it('revalidates persisted configuration against a hidden system drive', async () => {
+    const getImplementation = jest.fn(async (path: string): Promise<unknown> => {
+      if (path.includes("lists('list-id')?$select")) {
+        return {
+          Id: 'list-id',
+          Title: 'PlanningPokerAppData',
+          RootFolder: { ServerRelativeUrl: '/sites/team/PlanningPokerAppData' }
+        };
+      }
+      if (path.includes('/fields?')) {
+        return {
+          value: SHAREPOINT_METADATA_FIELDS.map((field, index) => ({
+            Title: field.displayName,
+            InternalName: `Field${index}`
+          }))
+        };
+      }
+      if (path.includes('_api/v2.1/drives')) {
+        expect(path).toContain('system');
+        return {
+          value: [
+            {
+              id: 'drive-id',
+              sharepointIds: { listId: 'list-id' },
+              system: {}
+            }
+          ]
+        };
+      }
+      throw new Error(`Unexpected test path: ${path}`);
+    });
+    const service = new PlanningPokerStorageService(createTransport(getImplementation), {
+      webAbsoluteUrl: 'https://example.sharepoint.com/sites/team',
+      metadataFields: SHAREPOINT_METADATA_FIELDS,
+      now: () => new Date('2026-07-10T00:00:00.000Z')
+    });
+
+    await expect(
+      service.validateConfiguration({
+        libraryTitle: 'PlanningPokerAppData',
+        listId: 'list-id',
+        driveId: 'drive-id',
+        serverRelativeUrl: '/sites/team/PlanningPokerAppData',
+        webAbsoluteUrl: 'https://example.sharepoint.com/sites/team',
+        provisioningVersion: '1.0.0',
+        schemaVersion: '1.0.0',
+        fieldMap: {},
+        lastValidatedAt: '2026-07-09T00:00:00.000Z'
+      })
+    ).resolves.toMatchObject({
+      isValid: true,
+      configuration: { driveId: 'drive-id' }
+    });
   });
 
   it('repairs fields, resolves the drive, and then hides the library', async () => {

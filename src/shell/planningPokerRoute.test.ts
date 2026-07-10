@@ -1,4 +1,8 @@
-import { parsePlanningPokerRoute, writePlanningPokerRoute } from './planningPokerRoute';
+import {
+  parsePlanningPokerRoute,
+  readPlanningPokerRoute,
+  writePlanningPokerRoute
+} from './planningPokerRoute';
 
 describe('Planning Poker route handling', () => {
   it('preserves unrelated parameters while writing a focused voting route', () => {
@@ -41,5 +45,29 @@ describe('Planning Poker route handling', () => {
     expect(result).not.toContain('planningPokerTeam');
     expect(parsePlanningPokerRoute(result).view).toBe('About');
     expect(parsePlanningPokerRoute('planningPokerView=Stories').view).toBe('Stories');
+  });
+
+  it('explains invalid and incomplete route fallbacks without exposing untrusted values', () => {
+    expect(readPlanningPokerRoute('planningPokerView=Admin').notice).toBe('invalid-view');
+    expect(readPlanningPokerRoute('planningPokerView=Voting&planningPokerTeam=team-1').notice).toBe(
+      'incomplete-voting-link'
+    );
+    expect(
+      readPlanningPokerRoute(
+        'planningPokerView=Voting&planningPokerTeam=%2Fbad&planningPokerSession=session-1'
+      ).notice
+    ).toBe('invalid-identifier');
+  });
+
+  it('encodes opaque identifiers and accepts a leading question mark', () => {
+    const search = writePlanningPokerRoute('?keep=hello%20world', {
+      view: 'Voting',
+      teamId: 'team_1',
+      sessionId: 'session-1',
+      focusedVoting: true
+    });
+
+    expect(search).toContain('keep=hello+world');
+    expect(parsePlanningPokerRoute(`?${search}`).focusedVoting).toBe(true);
   });
 });
