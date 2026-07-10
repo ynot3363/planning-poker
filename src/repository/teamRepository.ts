@@ -1,0 +1,215 @@
+import type {
+  PlanningPokerDocumentRoot,
+  PlanningPokerTeam,
+  UserReference
+} from '../domain/planningPokerDomain';
+import type { IPlanningPokerStorageConfiguration } from '../storage/storageTypes';
+
+/** Stable error categories that the UI can translate into non-sensitive messages. */
+export type TeamRepositoryErrorCode =
+  | 'not-configured'
+  | 'not-found'
+  | 'access-denied'
+  | 'incompatible-schema'
+  | 'corrupt-document'
+  | 'duplicate-title'
+  | 'invalid-title'
+  | 'disconnected'
+  | 'save-timeout';
+
+/** Represents an expected repository failure without exposing transport details. */
+export class TeamRepositoryError extends Error {
+  /**
+   * Creates a typed repository error.
+   *
+   * @param code - The stable category used by callers.
+   * @param message - The non-sensitive diagnostic message.
+   */
+  public constructor(
+    public readonly code: TeamRepositoryErrorCode,
+    message: string
+  ) {
+    super(message);
+    this.name = 'TeamRepositoryError';
+  }
+}
+
+/** Describes a team using lightweight SharePoint metadata. */
+export interface HostedTeamSummary {
+  /** The stable team identifier. */
+  readonly teamId: string;
+  /** The ODSP drive item identifier used to load the Fluid container. */
+  readonly driveItemId: string;
+  /** The team title displayed in discovery results. */
+  readonly title: string;
+  /** Whether the team is available for current work. */
+  readonly isActive: boolean;
+}
+
+/** Owns one loaded Fluid document and its subscription lifecycle. */
+export interface TeamDocumentHandle {
+  /** The stable team identifier. */
+  readonly teamId: string;
+  /** The ODSP drive item identifier. */
+  readonly driveItemId: string;
+  /** @returns A plain serializable snapshot of the current shared state. */
+  getSnapshot(): PlanningPokerDocumentRoot;
+  /**
+   * @param listener - The callback invoked after shared state changes.
+   * @returns An idempotent unsubscribe function.
+   */
+  subscribe(listener: () => void): () => void;
+  /** @returns `void` after owned subscriptions and clients are released. */
+  dispose(): void;
+}
+
+/** Defines the SharePoint and Fluid operations required by the domain repository. */
+export interface ITeamDocumentStore {
+  /** @returns All team summaries the current user can access. */
+  list(): Promise<readonly HostedTeamSummary[]>;
+  /**
+   * Queries host metadata for the supplied user; SharePoint remains the authorization boundary.
+   *
+   * @param currentUser - The user whose hosted teams should be discovered.
+   * @returns Team summaries whose host metadata contains the user.
+   */
+  listHostedBy(currentUser: UserReference): Promise<readonly HostedTeamSummary[]>;
+  /**
+   * @param team - The initial team state.
+   * @param fileName - The validated Fluid file name.
+   * @returns The attached team document handle.
+   */
+  create(team: PlanningPokerTeam, fileName: string): Promise<TeamDocumentHandle>;
+  /** @param id - The ODSP drive item identifier. @returns The loaded document handle. */
+  load(id: string): Promise<TeamDocumentHandle>;
+  /**
+   * @param teamId - The stable team identifier.
+   * @param title - The validated new title.
+   * @returns A promise that resolves when the rename is acknowledged.
+   */
+  rename(teamId: string, title: string): Promise<void>;
+}
+
+const INVALID_FILE_NAME = /["*:<>?\\/|]/;
+const RESERVED_NAMES = new Set(['con', 'prn', 'aux', 'nul', 'com1', 'lpt1']);
+
+/**
+ * Validates a team title against SharePoint file-name constraints.
+ *
+ * @param title - The untrusted user-entered title.
+ * @returns A user-facing error, or `undefined` when the title is valid.
+ */
+export function validateTeamTitle(title: string): string | undefined {
+  const value = title.trim();
+  if (value.length === 0) {
+    return 'Enter a team title.';
+  }
+  if (INVALID_FILE_NAME.test(value) || value.endsWith('.')) {
+    return 'The title is not a valid SharePoint file name.';
+  }
+  if (RESERVED_NAMES.has(value.toLocaleLowerCase())) {
+    return 'The title uses a reserved file name.';
+  }
+  return undefined;
+}
+
+/**
+ * Determines whether a user is listed as an application-level host.
+ *
+ * @remarks SharePoint permissions, rather than this UI role, authorize protected operations.
+ * @param team - The team to inspect.
+ * @param currentUser - The current delegated user.
+ * @returns `true` when the user is present in host metadata.
+ */
+export function isHostedBy(team: PlanningPokerTeam, currentUser: UserReference): boolean {
+  return team.hosts.some((host) => host.objectId === currentUser.objectId);
+}
+
+/** Coordinates domain validation with a SharePoint- and Fluid-backed document store. */
+export class TeamRepository {
+  /**
+   * Creates a repository for one configured web-part instance.
+   *
+   * @param storage - The validated storage configuration, when available.
+   * @param store - The document-store boundary.
+   */
+  public constructor(
+    private readonly storage: IPlanningPokerStorageConfiguration | undefined,
+    private readonly store: ITeamDocumentStore
+  ) {}
+
+  /**
+   * Lists teams whose host metadata contains the current user.
+   *
+   * @param currentUser - The current delegated user.
+   * @returns The matching lightweight team summaries.
+   */
+  public async listHostedTeams(currentUser: UserReference): Promise<readonly HostedTeamSummary[]> {
+    this.requireStorage();
+    return this.store.listHostedBy(currentUser);
+  }
+
+  /**
+   * Validates and creates one team Fluid document.
+   *
+   * @param team - The initial team state.
+   * @returns The attached document handle.
+   * @throws Throws `TeamRepositoryError` when storage is missing or the title is invalid or used.
+   */
+  public async createTeamDocument(team: PlanningPokerTeam): Promise<TeamDocumentHandle> {
+    this.requireStorage();
+    const titleError = validateTeamTitle(team.title);
+    if (titleError !== undefined) {
+      throw new TeamRepositoryError('invalid-title', titleError);
+    }
+    const existing = await this.store.list();
+    if (
+      existing.some(
+        (candidate) => candidate.title.toLocaleLowerCase() === team.title.toLocaleLowerCase()
+      )
+    ) {
+      throw new TeamRepositoryError('duplicate-title', 'A team already uses that title.');
+    }
+    return this.store.create(team, `${team.title}.fluid`);
+  }
+
+  /**
+   * Loads one team document after confirming storage is configured.
+   *
+   * @param id - The ODSP drive item identifier.
+   * @returns The loaded document handle.
+   */
+  public async loadTeamDocument(id: string): Promise<TeamDocumentHandle> {
+    this.requireStorage();
+    return this.store.load(id);
+  }
+
+  /**
+   * Validates and renames a team document.
+   *
+   * @param teamId - The stable team identifier.
+   * @param title - The requested team title.
+   * @returns A promise that resolves when the rename is acknowledged.
+   * @throws Throws `TeamRepositoryError` when storage is missing or the title is invalid.
+   */
+  public async renameTeamDocument(teamId: string, title: string): Promise<void> {
+    this.requireStorage();
+    const titleError = validateTeamTitle(title);
+    if (titleError !== undefined) {
+      throw new TeamRepositoryError('invalid-title', titleError);
+    }
+    await this.store.rename(teamId, title);
+  }
+
+  /**
+   * Enforces the configured-storage precondition for repository operations.
+   *
+   * @returns `void` when storage is configured.
+   * @throws Throws `TeamRepositoryError` when storage is unavailable.
+   */
+  private requireStorage(): void {
+    if (this.storage === undefined) {
+      throw new TeamRepositoryError('not-configured', 'Planning Poker storage is not configured.');
+    }
+  }
+}
