@@ -1,29 +1,94 @@
-.planningPoker {
-  overflow: hidden;
-  padding: 1em;
-  color: "[theme:bodyText, default: #323130]";
+.configuration {
+  --planning-poker-configuration-border: '[theme:neutralLight, default: #edebe9]';
+  align-items: flex-start;
+  background: '[theme:white, default: #ffffff]';
+  border: 1px solid var(--planning-poker-configuration-border);
+  border-radius: 12px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12);
+  box-sizing: border-box;
+  color: '[theme:bodyText, default: #323130]';
   color: var(--bodyText);
+  display: flex;
+  gap: 20px;
+  inline-size: min(100%, 720px);
+  margin: 24px auto;
+  padding: 24px;
 }
 
-.welcome {
-  text-align: center;
+.storageGraphic {
+  --planning-poker-storage-border: '[theme:themeLighter, default: #deecf9]';
+  align-items: center;
+  background: '[theme:themeLighterAlt, default: #eff6fc]';
+  border: 1px solid var(--planning-poker-storage-border);
+  border-radius: 50%;
+  display: flex;
+  flex: 0 0 72px;
+  block-size: 72px;
+  justify-content: center;
+  inline-size: 72px;
 }
 
-.welcomeImage {
-  width: 100%;
-  max-width: 420px;
+.storageIcon {
+  color: '[theme:themePrimary, default: #0078d4]';
+  font-size: 32px;
 }
 
-.links {
-  a {
-    text-decoration: none;
-    color: "[theme:link, default:#03787c]";
-    color: var(--link); // note: CSS Custom Properties support is limited to modern browsers only
+.configurationBody {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
 
-    &:hover {
-      text-decoration: underline;
-      color: "[theme:linkHovered, default: #014446]";
-      color: var(--linkHovered); // note: CSS Custom Properties support is limited to modern browsers only
-    }
+.configurationBody > * {
+  margin-block: 0 12px;
+}
+
+.configurationBody > :last-child {
+  margin-block-end: 0;
+}
+
+.eyebrow {
+  color: '[theme:themePrimary, default: #0078d4]';
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.description {
+  line-height: 1.5;
+  max-inline-size: 56ch;
+}
+
+.configureButton {
+  margin-block-start: 4px;
+}
+
+@media (max-width: 479px) {
+  .configuration {
+    align-items: stretch;
+    flex-direction: column;
+    margin-block: 12px;
+    padding: 20px;
+  }
+
+  .storageGraphic {
+    block-size: 60px;
+    flex-basis: 60px;
+    inline-size: 60px;
+  }
+
+  .storageIcon {
+    font-size: 28px;
+  }
+}
+
+@media (forced-colors: active) {
+  .configuration {
+    border-color: CanvasText;
+    box-shadow: none;
+  }
+
+  .storageGraphic {
+    border-color: CanvasText;
   }
 }

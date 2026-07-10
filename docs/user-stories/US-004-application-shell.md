@@ -50,15 +50,17 @@ Define typed shell contracts equivalent to:
 - Invalid or incomplete route values fall back safely with a useful message;
   the web part does not use `BrowserRouter` or take ownership of SharePoint
   browser history.
-- The About screen explains configuration, team setup, story management,
-  session joining, named versus anonymous voting, results, exports, and the
-  host/participant capability distinction.
+- The About screen explains team and story workflows, session joining, named
+  versus anonymous voting, results, exports, and the host/participant capability
+  distinction. It does not repeat setup steps or expose storage-provisioning
+  details that are relevant only before the configured shell is available.
 - Fluent UI v8 components are imported from supported specific paths. The shell
   uses theme slots/CSS variables, CSS modules, and SharePoint theme variants.
-- Visual treatment uses rounded cards, light borders, subtle shadows, blue
-  primary actions, purple configuration/callout accents, green success, red
-  destructive actions, amber warnings, and gray secondary controls without
-  using color alone to communicate meaning.
+- Visual treatment gives the outer shell and cards rounded corners, light
+  borders, and subtle elevation; blue primary actions, purple
+  configuration/callout accents, green success, red destructive actions, amber
+  warnings, and gray secondary controls do not use color alone to communicate
+  meaning.
 - Primary actions are limited to the most important action in the current
   context; secondary actions use default/subtle button treatment.
 - Navigation, focus changes, loading, errors, and route changes meet WCAG 2.2 AA

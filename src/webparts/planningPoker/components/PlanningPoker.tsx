@@ -1,44 +1,215 @@
 import * as React from 'react';
+import { PrimaryButton } from '@fluentui/react/lib/Button';
+import { Icon } from '@fluentui/react/lib/Icon';
+import { MessageBar, MessageBarType } from '@fluentui/react/lib/MessageBar';
+import type { IReadonlyTheme } from '@microsoft/sp-component-base';
+import type { ServiceScope } from '@microsoft/sp-core-library';
+import type {
+  IPlanningPokerStorageConfiguration,
+  IStorageProvisioningService
+} from '../../../storage/storageTypes';
+import { ApplicationShell } from '../../../shell/ApplicationShell';
+import type { IPlanningPokerCurrentUser } from '../../../shell/ApplicationShell';
+import { readPlanningPokerRoute, writePlanningPokerRoute } from '../../../shell/planningPokerRoute';
+import type { IPlanningPokerRoute } from '../../../shell/planningPokerRoute';
 import styles from './PlanningPoker.module.scss';
-import type { IPlanningPokerProps } from './IPlanningPokerProps';
-import { escape } from '@microsoft/sp-lodash-subset';
-import welcomeDark from '../assets/welcome-dark.png';
-import welcomeLight from '../assets/welcome-light.png';
+import { PlanningPokerThemeProvider } from './PlanningPokerTheme';
 
-export default class PlanningPoker extends React.Component<IPlanningPokerProps> {
-  public render(): React.ReactElement<IPlanningPokerProps> {
-    const {
-      description,
-      isDarkTheme,
-      environmentMessage,
-      userDisplayName
-    } = this.props;
+/** Abstracts browser route ownership for deterministic component tests and host integration. */
+export interface IPlanningPokerRouteAdapter {
+  /** @returns The current SharePoint page query string. */
+  getSearch(): string;
+  /** @param search - The next query string without a leading question mark. */
+  replaceSearch(search: string): void;
+  /**
+   * Observes host-driven browser navigation when the adapter supports it.
+   *
+   * @param listener - Callback invoked after the page route changes.
+   * @returns An idempotent unsubscribe function.
+   */
+  subscribe?(listener: () => void): () => void;
+}
 
-    return (
-      <section className={`${styles.planningPoker}`}>
-        <div className={styles.welcome}>
-          <img alt="" src={isDarkTheme ? welcomeDark : welcomeLight} className={styles.welcomeImage} />
-          <h2>Well done, {escape(userDisplayName)}!</h2>
-          <div>{environmentMessage}</div>
-          <div>Web part property value: <strong>{escape(description)}</strong></div>
-        </div>
-        <div>
-          <h3>Welcome to SharePoint Framework!</h3>
-          <p>
-            The SharePoint Framework (SPFx) is a extensibility model for Microsoft Viva, Microsoft Teams and SharePoint. It&#39;s the easiest way to extend Microsoft 365 with automatic Single Sign On, automatic hosting and industry standard tooling.
-          </p>
-          <h4>Learn more about SPFx development:</h4>
-          <ul className={styles.links}>
-            <li><a href="https://aka.ms/spfx" target="_blank" rel="noreferrer">SharePoint Framework Overview</a></li>
-            <li><a href="https://aka.ms/spfx-yeoman-graph" target="_blank" rel="noreferrer">Use Microsoft Graph in your solution</a></li>
-            <li><a href="https://aka.ms/spfx-yeoman-teams" target="_blank" rel="noreferrer">Build for Microsoft Teams using SharePoint Framework</a></li>
-            <li><a href="https://aka.ms/spfx-yeoman-viva" target="_blank" rel="noreferrer">Build for Microsoft Viva Connections using SharePoint Framework</a></li>
-            <li><a href="https://aka.ms/spfx-yeoman-store" target="_blank" rel="noreferrer">Publish SharePoint Framework applications to the marketplace</a></li>
-            <li><a href="https://aka.ms/spfx-yeoman-api" target="_blank" rel="noreferrer">SharePoint Framework API reference</a></li>
-            <li><a href="https://aka.ms/m365pnp" target="_blank" rel="noreferrer">Microsoft 365 Developer Community</a></li>
-          </ul>
-        </div>
-      </section>
+const browserRouteAdapter: IPlanningPokerRouteAdapter = {
+  getSearch: () => window.location.search,
+  replaceSearch: (search) => {
+    const query = search.length === 0 ? '' : `?${search}`;
+    window.history.replaceState(
+      window.history.state,
+      document.title,
+      `${window.location.pathname}${query}${window.location.hash}`
     );
+  },
+  subscribe: (listener) => {
+    window.addEventListener('popstate', listener);
+    return (): void => window.removeEventListener('popstate', listener);
   }
+};
+
+/** Defines the dependencies and state supplied by the SPFx web-part boundary. */
+export interface IPlanningPokerProps {
+  /** The validated storage configuration, when provisioning is complete. */
+  readonly storageConfiguration?: IPlanningPokerStorageConfiguration;
+  /** The service that performs explicit, user-initiated provisioning. */
+  readonly storageService: IStorageProvisioningService;
+  /** Applies successfully provisioned storage at the web-part boundary. */
+  readonly onStorageConfigured: (configuration: IPlanningPokerStorageConfiguration) => void;
+  /** Whether SharePoint is currently editing the containing page. */
+  readonly isPageEditMode: boolean;
+  /** The current SharePoint theme, when supplied by the host. */
+  readonly theme?: IReadonlyTheme;
+  /** A non-sensitive first-render storage discovery failure. */
+  readonly storageInitializationError?: string;
+  /** Current Microsoft 365 user display data. */
+  readonly currentUser: IPlanningPokerCurrentUser;
+  /** SPFx service scope required by Microsoft 365 host components. */
+  readonly serviceScope: ServiceScope;
+  /** Optional route adapter used by tests or specialized Microsoft 365 hosts. */
+  readonly routeAdapter?: IPlanningPokerRouteAdapter;
+}
+
+/**
+ * Renders the configured application and owns URL-backed shell navigation state.
+ *
+ * @param props - Initialized web-part dependencies and Microsoft 365 context.
+ * @returns The configured application shell.
+ */
+function ConfiguredPlanningPoker(props: IPlanningPokerProps): React.ReactElement {
+  const routeAdapter = props.routeAdapter ?? browserRouteAdapter;
+  const [routeResult, setRouteResult] = React.useState(() =>
+    readPlanningPokerRoute(routeAdapter.getSearch())
+  );
+  const [isNavigationCollapsed, setIsNavigationCollapsed] = React.useState(false);
+
+  React.useEffect(() => {
+    if (routeAdapter.subscribe === undefined) {
+      return undefined;
+    }
+    return routeAdapter.subscribe(() => {
+      setRouteResult(readPlanningPokerRoute(routeAdapter.getSearch()));
+    });
+  }, [routeAdapter]);
+
+  const handleNavigate = (route: IPlanningPokerRoute): void => {
+    const search = writePlanningPokerRoute(routeAdapter.getSearch(), route);
+    routeAdapter.replaceSearch(search);
+    setRouteResult(readPlanningPokerRoute(search));
+  };
+
+  return (
+    <ApplicationShell
+      route={routeResult.route}
+      routeNotice={routeResult.notice}
+      isNavigationCollapsed={isNavigationCollapsed}
+      theme={props.theme}
+      configurationStatus="configured"
+      currentUser={props.currentUser}
+      serviceScope={props.serviceScope}
+      onNavigate={handleNavigate}
+      onToggleNavigation={() => setIsNavigationCollapsed((current) => !current)}
+    />
+  );
+}
+
+/**
+ * Renders storage configuration and handles explicit provisioning requests.
+ *
+ * @param props - Web-part dependencies and initialized state.
+ * @returns The configuration experience.
+ */
+function PlanningPokerContent(props: IPlanningPokerProps): React.ReactElement {
+  const [canProvisionStorage, setCanProvisionStorage] = React.useState<boolean>();
+  const [isProvisioning, setIsProvisioning] = React.useState(false);
+  const [error, setError] = React.useState<string>();
+
+  React.useEffect((): (() => void) | undefined => {
+    if (props.storageConfiguration !== undefined || !props.isPageEditMode) {
+      return undefined;
+    }
+    let isCurrent = true;
+    props.storageService.canProvision().then(
+      (isAllowed) => {
+        if (isCurrent) {
+          setCanProvisionStorage(isAllowed);
+        }
+      },
+      () => {
+        if (isCurrent) {
+          setCanProvisionStorage(false);
+          setError('Unable to verify SharePoint provisioning permissions.');
+        }
+      }
+    );
+    return (): void => {
+      isCurrent = false;
+    };
+  }, [props.isPageEditMode, props.storageConfiguration, props.storageService]);
+
+  /** Performs the user-initiated provisioning request and maps failures to safe UI text. */
+  const handleProvision = async (): Promise<void> => {
+    setIsProvisioning(true);
+    setError(undefined);
+    try {
+      props.onStorageConfigured(await props.storageService.provision());
+    } catch {
+      setIsProvisioning(false);
+      setError('Storage could not be configured. You can safely try again.');
+    }
+  };
+
+  if (props.storageConfiguration !== undefined) {
+    return <ConfiguredPlanningPoker {...props} />;
+  }
+  const message = props.storageInitializationError ?? error;
+  return (
+    <main className={styles.configuration} aria-labelledby="planning-poker-storage">
+      <div className={styles.storageGraphic} aria-hidden="true">
+        <Icon className={styles.storageIcon} iconName="CloudAdd" />
+      </div>
+      <div className={styles.configurationBody}>
+        <p className={styles.eyebrow}>One-time setup</p>
+        <h2 id="planning-poker-storage">Configure Planning Poker storage</h2>
+        <p className={styles.description}>
+          Planning Poker needs a hidden site library for collaborative data. A site owner with Edit
+          permissions must configure it once.
+        </p>
+        {!props.isPageEditMode && (
+          <MessageBar messageBarType={MessageBarType.warning}>
+            Edit this SharePoint page to configure storage, then save or publish the page so the
+            storage settings are retained.
+          </MessageBar>
+        )}
+        {message !== undefined && (
+          <MessageBar messageBarType={MessageBarType.error}>{message}</MessageBar>
+        )}
+        {canProvisionStorage === false &&
+          props.storageInitializationError === undefined &&
+          error === undefined && (
+            <MessageBar messageBarType={MessageBarType.warning}>
+              You need Manage Lists permission to configure Planning Poker storage.
+            </MessageBar>
+          )}
+        <PrimaryButton
+          className={styles.configureButton}
+          text={isProvisioning ? 'Creating storage...' : 'Create storage'}
+          disabled={!props.isPageEditMode || canProvisionStorage !== true || isProvisioning}
+          onClick={handleProvision}
+        />
+      </div>
+    </main>
+  );
+}
+
+/**
+ * Provides the SharePoint theme and renders the Planning Poker root experience.
+ *
+ * @param props - Web-part dependencies and initialized state.
+ * @returns The themed React tree.
+ */
+export default function PlanningPoker(props: IPlanningPokerProps): React.ReactElement {
+  return (
+    <PlanningPokerThemeProvider theme={props.theme}>
+      <PlanningPokerContent {...props} />
+    </PlanningPokerThemeProvider>
+  );
 }

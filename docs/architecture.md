@@ -142,9 +142,13 @@ apiNotFound
 A more reliable pattern is to enumerate the site's drive collection and match the document library:
 
 ```text
-/_api/v2.1/drives?$select=id,name,webUrl,sharepointIds
-/_api/v2.0/drives?$select=id,name,webUrl,sharepointIds
+/_api/v2.1/drives?$select=id,name,webUrl,sharepointIds,system
+/_api/v2.0/drives?$select=id,name,webUrl,sharepointIds,system
 ```
+
+Explicitly select the `system` facet. SharePoint can omit a hidden library from
+the drive collection unless system drives are requested, including when a saved
+web part configuration is revalidated after provisioning.
 
 Match by:
 
@@ -182,20 +186,20 @@ For a SharedTree-based app, the container schema can look like:
 ```ts
 const containerSchema = {
   initialObjects: {
-    appTree: SharedTree,
-  },
+    appTree: SharedTree
+  }
 } as const;
 ```
 
 The app then creates a typed tree schema for its root state:
 
 ```ts
-const schemaFactory = new SchemaFactory("contoso.app");
+const schemaFactory = new SchemaFactory('contoso.app');
 
-const AppRootSchema = schemaFactory.object("AppRoot", {
+const AppRootSchema = schemaFactory.object('AppRoot', {
   schemaVersion: SchemaFactory.string,
   title: SchemaFactory.string,
-  updatedAt: SchemaFactory.string,
+  updatedAt: SchemaFactory.string
 });
 ```
 
@@ -250,13 +254,9 @@ For the Fluid + SharePoint ODSP pattern:
 Common imports:
 
 ```ts
-import { OdspClient } from "@fluidframework/odsp-client/beta";
-import {
-  SchemaFactory,
-  Tree,
-  TreeViewConfiguration,
-} from "@fluidframework/tree";
-import { SharedTree } from "@fluidframework/tree/legacy";
+import { OdspClient } from '@fluidframework/odsp-client/beta';
+import { SchemaFactory, Tree, TreeViewConfiguration } from '@fluidframework/tree';
+import { SharedTree } from '@fluidframework/tree/legacy';
 ```
 
 For SPFx:
@@ -285,9 +285,9 @@ const client = new OdspClient({
   connection: {
     siteUrl: webAbsoluteUrl,
     driveId,
-    filePath: "",
-    tokenProvider,
-  },
+    filePath: '',
+    tokenProvider
+  }
 });
 ```
 
@@ -296,18 +296,14 @@ Attach example:
 ```ts
 const itemId = await container.attach({
   fileName: `${slug}-${Date.now()}.fluid`,
-  filePath: undefined,
+  filePath: undefined
 });
 ```
 
 Load example:
 
 ```ts
-const { container, services } = await client.getContainer(
-  itemId,
-  containerSchema,
-  minFluidVersion,
-);
+const { container, services } = await client.getContainer(itemId, containerSchema, minFluidVersion);
 ```
 
 ## Token Model
@@ -340,14 +336,14 @@ Example token provider shape:
 ```ts
 const getToken = async (resource: string, refresh: boolean) => ({
   token: await aadTokenProvider.getToken(resource, !refresh),
-  fromCache: !refresh,
+  fromCache: !refresh
 });
 
 const tokenProvider = {
   fetchStorageToken: async (_siteUrl: string, refresh: boolean) =>
     getToken(storageResource, refresh),
   fetchWebsocketToken: async (_siteUrl: string, refresh: boolean) =>
-    getToken("https://pushchannel.1drv.ms", refresh),
+    getToken('https://pushchannel.1drv.ms', refresh)
 };
 ```
 

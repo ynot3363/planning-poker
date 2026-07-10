@@ -1,0 +1,262 @@
+.shell {
+  --planning-poker-accent-border: '[theme:purple, default: #5c2d91]';
+  --planning-poker-danger-border: '[theme:redDark, default: #a4262c]';
+  --planning-poker-default-border: '[theme:neutralQuaternary, default: #d2d0ce]';
+  --planning-poker-neutral-border: '[theme:neutralLight, default: #edebe9]';
+  --planning-poker-shell-border: '[theme:neutralTertiaryAlt, default: #c8c6c4]';
+  --planning-poker-success-border: '[theme:green, default: #107c10]';
+  --planning-poker-warning-border: '[theme:orange, default: #d83b01]';
+  background: '[theme:white, default: #ffffff]';
+  border: 1px solid var(--planning-poker-shell-border);
+  border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+  box-sizing: border-box;
+  color: '[theme:bodyText, default: #323130]';
+  display: flex;
+  inline-size: 100%;
+  min-block-size: 420px;
+  overflow: hidden;
+}
+
+.focusedShell {
+  display: block;
+}
+
+.navigationRail {
+  background: '[theme:neutralLighterAlt, default: #faf9f8]';
+  border-inline-end: 1px solid var(--planning-poker-neutral-border);
+  box-sizing: border-box;
+  display: flex;
+  flex: 0 0 224px;
+  flex-direction: column;
+  inline-size: 224px;
+  min-inline-size: 0;
+  padding: 12px 8px;
+  transition:
+    flex-basis 120ms ease,
+    inline-size 120ms ease;
+}
+
+.navigationCollapsed {
+  flex-basis: 56px;
+  inline-size: 56px;
+}
+
+.navigationHeader {
+  align-items: center;
+  display: flex;
+  gap: 4px;
+  justify-content: space-between;
+  min-block-size: 40px;
+  padding-inline: 4px;
+}
+
+.productName {
+  font-size: 16px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.navigationList {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  list-style: none;
+  margin: 16px 0;
+  padding: 0;
+}
+
+.navigationList li {
+  margin: 0;
+  min-inline-size: 0;
+}
+
+.navigationButton {
+  border-radius: 6px;
+  box-sizing: border-box;
+  inline-size: 100%;
+  justify-content: flex-start;
+  min-inline-size: 0;
+  text-align: start;
+}
+
+.navigationSelected {
+  background: '[theme:themeLighterAlt, default: #eff6fc]';
+  box-shadow: inset 3px 0 0 '[theme:themePrimary, default: #0078d4]';
+  color: '[theme:themeDark, default: #005a9e]';
+  font-weight: 600;
+}
+
+.currentUser {
+  border-block-start: 1px solid var(--planning-poker-neutral-border);
+  margin-block-start: auto;
+  min-inline-size: 0;
+  padding: 12px 8px 4px;
+}
+
+.currentUserPersona {
+  inline-size: 100%;
+  min-inline-size: 0;
+}
+
+.navigationCollapsed .currentUser {
+  padding-inline: 4px;
+}
+
+.mainContent {
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  inline-size: 100%;
+  min-inline-size: 0;
+  outline: none;
+  overflow-wrap: anywhere;
+  padding: 24px;
+}
+
+.mainContent:focus-visible {
+  box-shadow: inset 0 0 0 2px '[theme:focusBorder, default: #000000]';
+}
+
+.pageHeading {
+  align-items: flex-start;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  margin-block-end: 20px;
+}
+
+.pageHeadingText {
+  min-inline-size: 0;
+}
+
+.pageHeading h1,
+.contentCard h2 {
+  margin-block: 0 8px;
+}
+
+.pageHeading h1 {
+  font-size: 28px;
+  line-height: 1.2;
+}
+
+.pageHeading p,
+.contentCard p {
+  line-height: 1.5;
+  margin-block: 0;
+}
+
+.commandArea {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.routeNotice {
+  margin-block-end: 16px;
+}
+
+.cardGrid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+}
+
+.contentCard {
+  background: '[theme:white, default: #ffffff]';
+  border: 1px solid var(--planning-poker-neutral-border);
+  border-radius: 10px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  box-sizing: border-box;
+  min-inline-size: 0;
+  padding: 20px;
+}
+
+.cardToneaccent {
+  border-block-start: 4px solid var(--planning-poker-accent-border);
+}
+
+.cardTonesuccess {
+  border-block-start: 4px solid var(--planning-poker-success-border);
+}
+
+.cardTonewarning {
+  border-block-start: 4px solid var(--planning-poker-warning-border);
+}
+
+.cardTonedanger {
+  border-block-start: 4px solid var(--planning-poker-danger-border);
+}
+
+.cardTonedefault {
+  border-block-start: 4px solid var(--planning-poker-default-border);
+}
+
+.statusState {
+  max-inline-size: 680px;
+}
+
+.statusDescription {
+  display: block;
+  margin-block-start: 4px;
+}
+
+.statusAction {
+  margin-block-start: 12px;
+}
+
+.destructiveButton {
+  background: '[theme:redDark, default: #a4262c]';
+  border-color: '[theme:redDark, default: #a4262c]';
+}
+
+@media (max-width: 639px) {
+  .navigationRail {
+    flex-basis: 184px;
+    inline-size: 184px;
+  }
+
+  .navigationCollapsed {
+    flex-basis: 48px;
+    inline-size: 48px;
+    padding-inline: 4px;
+  }
+
+  .mainContent {
+    padding: 16px;
+  }
+
+  .pageHeading {
+    flex-direction: column;
+  }
+
+  .commandArea {
+    justify-content: flex-start;
+  }
+}
+
+@media (forced-colors: active) {
+  .shell,
+  .navigationRail,
+  .contentCard,
+  .currentUser {
+    border-color: CanvasText;
+  }
+
+  .shell,
+  .contentCard {
+    box-shadow: none;
+  }
+
+  .navigationSelected {
+    border: 2px solid Highlight;
+    box-shadow: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .navigationRail {
+    transition: none;
+  }
+}
