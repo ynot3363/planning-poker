@@ -1,0 +1,11 @@
+coverage/
+dist/
+jest-output/
+lib/
+lib-commonjs/
+node_modules/
+release/
+sharepoint/solution/
+solution/
+temp/
+*.sppkg
