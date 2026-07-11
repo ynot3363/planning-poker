@@ -16,6 +16,7 @@ import { ContentCard, StatusState } from '../shell/ShellPrimitives';
 import { StoryFormPanel } from './StoryFormPanel';
 import { StoryCsvImportPanel } from './StoryCsvImportPanel';
 import { createStoryCsvTemplate } from './storyCsvImport';
+import { createStoryCatalogExportFileName, serializeStoryCatalog } from './storyCsvExport';
 import {
   createInitialStoryForm,
   createStoryFormFromStory,
@@ -67,6 +68,16 @@ export function StoriesPage(props: IStoriesPageProps): React.ReactElement {
   const defaultedTeamId = React.useRef<string>();
   const addStoryButtonRef = React.useRef<HTMLButtonElement>(null);
   const deleteTriggerRef = React.useRef<HTMLButtonElement>();
+  const exportUrlRef = React.useRef<string>();
+
+  React.useEffect(
+    () => () => {
+      if (exportUrlRef.current !== undefined) {
+        URL.revokeObjectURL(exportUrlRef.current);
+      }
+    },
+    []
+  );
 
   React.useEffect(() => {
     let isCurrent = true;
@@ -260,6 +271,39 @@ export function StoriesPage(props: IStoriesPageProps): React.ReactElement {
     URL.revokeObjectURL(url);
   };
 
+  const exportAllStories = (): void => {
+    if (document === undefined) {
+      return;
+    }
+    setMessage(undefined);
+    setSuccessMessage(undefined);
+    try {
+      const snapshot = document;
+      const csv = serializeStoryCatalog(snapshot.stories);
+      const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+      exportUrlRef.current = url;
+      const anchor = window.document.createElement('a');
+      anchor.href = url;
+      anchor.download = createStoryCatalogExportFileName(
+        snapshot.team.title,
+        new Date().toISOString()
+      );
+      anchor.click();
+      setSuccessMessage(
+        snapshot.stories.length === 0
+          ? 'A header-only story catalog was exported because this team has no stories.'
+          : `${snapshot.stories.length} ${snapshot.stories.length === 1 ? 'story was' : 'stories were'} exported.`
+      );
+    } catch {
+      setMessage('The story catalog could not be exported. Try again.');
+    } finally {
+      if (exportUrlRef.current !== undefined) {
+        URL.revokeObjectURL(exportUrlRef.current);
+        exportUrlRef.current = undefined;
+      }
+    }
+  };
+
   const teamOptions: IDropdownOption[] = teams.map((team) => ({
     key: team.teamId,
     text: team.title
@@ -319,6 +363,13 @@ export function StoriesPage(props: IStoriesPageProps): React.ReactElement {
             onClick={() => setIsImportOpen(true)}
           >
             Upload CSV
+          </DefaultButton>
+          <DefaultButton
+            iconProps={{ iconName: 'ExcelDocument' }}
+            disabled={session === undefined || document === undefined || loadState !== 'ready'}
+            onClick={exportAllStories}
+          >
+            Export all stories
           </DefaultButton>
           <PrimaryButton
             elementRef={addStoryButtonRef}
@@ -452,7 +503,10 @@ export function StoriesPage(props: IStoriesPageProps): React.ReactElement {
                             className={styles.deleteAction}
                             disabled={isBlocked || busyStoryId === story.id}
                             onClick={(event) =>
-                              openDeleteConfirmation(story, event.currentTarget as HTMLButtonElement)
+                              openDeleteConfirmation(
+                                story,
+                                event.currentTarget as HTMLButtonElement
+                              )
                             }
                           >
                             Delete

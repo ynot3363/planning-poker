@@ -125,7 +125,8 @@ function AboutView(): React.ReactElement {
           an archived story or returning a pointed story to Ready keeps its estimate history. Only
           Ready stories can enter a new voting round. Hosts can download the CSV template, preview a
           completed file locally, and confirm one all-or-nothing bulk import. Archive preserves a
-          story history, while Delete permanently removes it after confirmation.
+          story history, while Delete permanently removes it after confirmation. Export all stories
+          downloads the current catalog and estimates without votes or participant details.
         </p>
       </ContentCard>
       <ContentCard label="Named and anonymous voting">

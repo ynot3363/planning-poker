@@ -176,6 +176,7 @@ describe('StoriesPage', () => {
     });
 
     expect(container.textContent).toContain('Create a team before adding stories');
+    expect(container.textContent).not.toContain('Export all stories');
     act(() => {
       Array.from(container.querySelectorAll('button'))
         .find((button) => button.textContent?.includes('Go to Teams'))
@@ -225,6 +226,18 @@ describe('StoriesPage', () => {
     expect(createObjectUrl).toHaveBeenCalledWith(expect.any(Blob));
     expect(anchorClick).toHaveBeenCalledTimes(1);
     expect(revokeObjectUrl).toHaveBeenCalledWith('blob:story-template');
+    createObjectUrl.mockClear();
+    revokeObjectUrl.mockClear();
+    anchorClick.mockClear();
+    act(() => {
+      Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent?.includes('Export all stories'))
+        ?.click();
+    });
+    expect(createObjectUrl).toHaveBeenCalledWith(expect.any(Blob));
+    expect(anchorClick).toHaveBeenCalledTimes(1);
+    expect(revokeObjectUrl).toHaveBeenCalledWith('blob:story-template');
+    expect(container.textContent).toContain('3 stories were exported.');
     anchorClick.mockRestore();
     const link = container.querySelector<HTMLAnchorElement>(
       'a[href="https://example.com/work/ready"]'
@@ -460,5 +473,43 @@ describe('StoriesPage', () => {
       )
     ).toBe(false);
     expect(container.textContent).toContain('Ready backlog item was deleted.');
+  });
+
+  it('exports an empty header and recovers from generation failure', async () => {
+    const { service } = createService([summary], fixtureDocument);
+    const createObjectUrl = jest.fn(() => 'blob:empty-export');
+    const revokeObjectUrl = jest.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectUrl });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectUrl });
+    const anchorClick = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation();
+    await act(async () => {
+      renderPage(
+        <StoriesPage
+          currentUser={fixtureUser}
+          service={service}
+          selectedTeamId={summary.teamId}
+          onSelectTeam={jest.fn()}
+          onNavigateTeams={jest.fn()}
+        />,
+        container
+      );
+      await settle();
+    });
+    const exportButton = Array.from(container.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Export all stories')
+    );
+    act(() => exportButton?.click());
+    expect(container.textContent).toContain('header-only story catalog was exported');
+    expect(anchorClick).toHaveBeenCalledTimes(1);
+    expect(revokeObjectUrl).toHaveBeenCalledWith('blob:empty-export');
+
+    createObjectUrl.mockImplementation(() => {
+      throw new Error('generation failed');
+    });
+    act(() => exportButton?.click());
+    expect(container.textContent).toContain('story catalog could not be exported');
+    expect(container.textContent).not.toContain('header-only story catalog was exported');
+    expect(anchorClick).toHaveBeenCalledTimes(1);
+    anchorClick.mockRestore();
   });
 });

@@ -76,3 +76,32 @@ Uploads are limited to 5 MB and 1,000 nonblank rows. Exact duplicate rows receiv
 a warning, while duplicate titles remain valid. Any invalid row disables import.
 One confirmation creates all previewed stories as Ready with a common Added On
 time and the current host as Added By, or creates none.
+
+## CSV Export
+
+Choose **Export all stories** after selecting a hosted team to download the
+complete Ready, Pointed, and Archived catalog. The browser generates
+`<Team Title>-stories-<YYYY-MM-DD>.csv` from one plain Fluid snapshot without
+changing the team document or SharePoint metadata. A team without stories
+exports a header-only file.
+
+| Column                   | Meaning                                                |
+| ------------------------ | ------------------------------------------------------ |
+| Story ID                 | Stable Planning Poker story identifier                 |
+| Title                    | Current title                                          |
+| Description              | Current multiline description                          |
+| Link                     | Current optional source link                           |
+| Status                   | Ready, Pointed, or Archived                            |
+| Added By                 | Display name from the immutable creation audit         |
+| Added On                 | Full ISO creation timestamp                            |
+| Current Point Value      | Current assigned estimate, or blank                    |
+| Current Point Session ID | Session that produced the current estimate, or blank   |
+| Last Pointed On          | Finalized timestamp for the current estimate, or blank |
+
+The export includes the current estimate summary even after archive, restore,
+or re-point operations retain it. It intentionally excludes historical estimate
+entries, individual votes, vote breakdowns, participant identities, and
+anonymous aliases. CSV values are Excel-compatible and preserve commas, quotes,
+line endings, multiline text, and Unicode. Formula-like cells are prefixed in
+the exported file so spreadsheet software treats them as text; stored story data
+is not changed.
