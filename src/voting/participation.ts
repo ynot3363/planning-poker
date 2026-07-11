@@ -37,6 +37,17 @@ export type ParticipationPresentation =
     };
 
 /**
+ * Converts a SharePoint claims login into the principal name expected by Microsoft 365 personas.
+ *
+ * @param loginName - SharePoint login name, with or without a claims-provider prefix.
+ * @returns The trimmed value after the final claims separator.
+ */
+export function normalizeParticipantUpn(loginName: string): string {
+  const separatorIndex = loginName.lastIndexOf('|');
+  return (separatorIndex >= 0 ? loginName.slice(separatorIndex + 1) : loginName).trim();
+}
+
+/**
  * Returns connected voter IDs eligible to block automatic reveal for the current round.
  *
  * @param session - Session whose joined roster defines eligibility.
@@ -111,7 +122,7 @@ export function selectParticipation(
       .map((participant) => ({
         participantId: participant.id,
         displayName: participant.user.displayName,
-        upn: participant.user.loginName,
+        upn: normalizeParticipantUpn(participant.user.loginName),
         connection: participant.presence.connection,
         hasVoted: votedIds.has(participant.id),
         isCurrent: participant.id === currentParticipantId

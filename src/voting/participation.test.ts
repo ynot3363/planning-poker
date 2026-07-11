@@ -4,7 +4,12 @@ import {
   fixtureUser
 } from '../domain/planningPokerFixtures';
 import type { VotingSession } from '../domain/planningPokerDomain';
-import { getEligibleVoterIds, selectCurrentVoteValue, selectParticipation } from './participation';
+import {
+  getEligibleVoterIds,
+  normalizeParticipantUpn,
+  selectCurrentVoteValue,
+  selectParticipation
+} from './participation';
 
 const namedParticipant = {
   kind: 'Named' as const,
@@ -61,9 +66,42 @@ describe('participation selectors', () => {
     expect(presentation).toEqual({
       mode: 'Named',
       counts: { joined: 1, connected: 1, disconnected: 0, voted: 1, remaining: 0 },
-      rows: [expect.objectContaining({ displayName: fixtureUser.displayName, hasVoted: true })]
+      rows: [
+        expect.objectContaining({
+          displayName: fixtureUser.displayName,
+          upn: fixtureUser.loginName,
+          hasVoted: true
+        })
+      ]
     });
     expect(JSON.stringify(presentation)).not.toContain('"8"');
+  });
+
+  it('normalizes SharePoint claims logins for live persona and photo lookups', () => {
+    expect(normalizeParticipantUpn('i:0#.f|membership| ada@example.com ')).toBe('ada@example.com');
+    expect(normalizeParticipantUpn('grace@example.com')).toBe('grace@example.com');
+
+    const session = createSession('Named');
+    const presentation = selectParticipation(
+      {
+        ...session,
+        participants: [
+          {
+            ...namedParticipant,
+            user: {
+              ...fixtureUser,
+              loginName: 'i:0#.f|membership|ada@example.com'
+            }
+          }
+        ]
+      },
+      'named-1'
+    );
+
+    expect(presentation.mode).toBe('Named');
+    if (presentation.mode === 'Named') {
+      expect(presentation.rows[0].upn).toBe('ada@example.com');
+    }
   });
 
   it('returns only the current participant vote for local selection feedback', () => {
