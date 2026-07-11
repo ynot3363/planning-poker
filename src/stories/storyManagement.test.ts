@@ -83,6 +83,9 @@ function createHarness(document: PlanningPokerDocumentRoot = fixtureDocument): {
     selectVotingStory: jest.fn(() => 'invalid-session'),
     castVotingVote: jest.fn(() => 'invalid-session'),
     updateVotingTimer: jest.fn(() => 'invalid-session'),
+    revealVotingRound: jest.fn(() => 'invalid-session'),
+    undoVotingRoundReveal: jest.fn(() => 'invalid-session'),
+    finalizeVotingRound: jest.fn(() => 'invalid-session'),
     setVotingParticipantConnection: jest.fn(),
     waitForSaved: jest.fn(async () => undefined),
     subscribe: (listener) => {

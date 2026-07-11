@@ -144,9 +144,11 @@ function AboutView(): React.ReactElement {
       <ContentCard label="Results and exports" tone="success">
         <h2>Results and exports</h2>
         <p>
-          The host reveals votes and deliberately assigns a valid estimate. Story and ended-session
-          exports contain the documented summaries; session-result exports exclude participant
-          identities and individual vote records.
+          Results reveal automatically after every connected participant votes, or a host can reveal
+          early. Reveal freezes voting and shows named choices or anonymous aggregates. A host then
+          confirms a final value from the session scale; the app never calculates the estimate
+          automatically. Story and ended-session exports contain the documented summaries;
+          session-result exports exclude participant identities and individual vote records.
         </p>
       </ContentCard>
       <ContentCard label="Host and participant capabilities" tone="warning">

@@ -16,3 +16,5 @@ restores the configured duration. Reaching zero produces an `Expired`
 presentation state and an explicit warning that voting remains open. Duplicate
 start, stop, and fully-reset commands are rejected at the transaction boundary
 so stale host controls cannot rewind or rebase the synchronized timer.
+Revealing results persists a Stopped timer snapshot for round history; timer
+expiration itself never invokes reveal.

@@ -99,6 +99,31 @@ export type VotingTimerResult =
   | 'invalid-command'
   | 'timer-disabled';
 
+/** Expected outcomes from revealing the current voting round. */
+export type VotingRevealResult =
+  | 'revealed'
+  | 'already-revealed'
+  | 'invalid-session'
+  | 'host-required'
+  | 'invalid-round';
+
+/** Expected outcomes from reopening a revealed round for voting. */
+export type VotingUndoRevealResult =
+  | 'reopened'
+  | 'invalid-session'
+  | 'host-required'
+  | 'invalid-round';
+
+/** Expected outcomes from finalizing a revealed estimate. */
+export type VotingFinalizeResult =
+  | 'finalized'
+  | 'already-finalized'
+  | 'invalid-session'
+  | 'host-required'
+  | 'invalid-round'
+  | 'invalid-estimate'
+  | 'invalid-story';
+
 /** Owns one loaded Fluid document and its subscription lifecycle. */
 export interface TeamDocumentHandle {
   /** The stable team identifier. */
@@ -178,6 +203,28 @@ export interface TeamDocumentHandle {
     currentUser: UserReference,
     timestamp: string
   ): VotingTimerResult;
+  /** Reveals the current round through a host-authorized manual command. */
+  revealVotingRound(
+    sessionId: string,
+    roundId: string,
+    currentUser: UserReference,
+    timestamp: string
+  ): VotingRevealResult;
+  /** Reopens the current revealed round while preserving its votes and stopped timer. */
+  undoVotingRoundReveal(
+    sessionId: string,
+    roundId: string,
+    currentUser: UserReference,
+    timestamp: string
+  ): VotingUndoRevealResult;
+  /** Finalizes a revealed round and assigns its story estimate atomically. */
+  finalizeVotingRound(
+    sessionId: string,
+    roundId: string,
+    scaleValue: string,
+    currentUser: UserReference,
+    timestamp: string
+  ): VotingFinalizeResult;
   /**
    * Updates technical participant presence without deleting durable roster or vote state.
    *

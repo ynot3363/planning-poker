@@ -212,7 +212,8 @@ When loading:
 3. Get the shared object.
 4. Create a typed tree view.
 5. Check compatibility.
-6. Upgrade schema if allowed and appropriate.
+6. Upgrade the stored schema whenever `canUpgrade` is true, even when `canView` is already true;
+   a readable older schema may still reject writes to newly added optional fields.
 7. Listen for tree changes.
 
 ## Fluid Mutation Pattern
@@ -249,6 +250,17 @@ may see their own value, Named mode may show voted/not-voted state, and
 Anonymous mode may show aggregate counts. Per-vote operations remain Fluid-only
 and must not trigger SharePoint metadata writes. See
 `docs/active-story-voting.md` for the complete feature contract.
+
+Reveal, reopen, and finalization are separate transaction commands. Reveal
+freezes the round, captures historical voted/missing counts, stops the timer,
+and exposes only privacy-shaped results. Host-authorized reopen applies only to
+the active Revealed round and preserves its votes and stopped timer. Finalization
+atomically updates the round, source story, current estimate, immutable estimate
+history, finalized-round index, and document Last Activity. A corrected final
+estimate appends history without duplicating the finalized-round index. Refresh
+SharePoint discovery metadata after the Fluid finalization is acknowledged; an
+idempotent retry must not duplicate history.
+See `docs/voting-results.md` for the result and assignment contract.
 
 ### Planning Poker Presence
 

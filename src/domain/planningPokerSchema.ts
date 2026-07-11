@@ -126,6 +126,9 @@ export const RoundSchema = factory.object('StoryVotingRound', {
   timer: TimerSchema,
   revealedAt: factory.optional(factory.string),
   revealedBy: factory.optional(UserReferenceSchema),
+  revealReason: factory.optional(factory.string),
+  revealedVotedCount: factory.optional(factory.number),
+  revealedMissingCount: factory.optional(factory.number),
   assignedValue: factory.optional(factory.string),
   finalizedAt: factory.optional(factory.string),
   finalizedBy: factory.optional(UserReferenceSchema)

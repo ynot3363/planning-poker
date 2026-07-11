@@ -19,6 +19,8 @@ export type VotingSessionStatus = 'Lobby' | 'Active' | 'Ended';
 export type VotingRoundStatus = 'Voting' | 'Revealed' | 'Finalized' | 'Cancelled';
 /** The current state of a voting timer. */
 export type TimerStatus = 'Ready' | 'Running' | 'Stopped';
+/** Why a voting round moved from Voting to Revealed. */
+export type RevealReason = 'Automatic' | 'Manual';
 /** The collaborative connection state reported for a participant. */
 export type ConnectionState = 'Connected' | 'Disconnected';
 
@@ -210,6 +212,12 @@ export interface StoryVotingRound {
   readonly revealedAt?: string;
   /** The user who revealed the votes. */
   readonly revealedBy?: UserReference;
+  /** Whether every connected voter completed voting or a host revealed early. */
+  readonly revealReason?: RevealReason;
+  /** Number of valid votes captured when results were revealed. */
+  readonly revealedVotedCount?: number;
+  /** Number of connected eligible voters missing a vote when results were revealed. */
+  readonly revealedMissingCount?: number;
   /** The estimate assigned when the round was finalized. */
   readonly assignedValue?: string;
   /** The ISO timestamp at which the round was finalized. */

@@ -265,6 +265,207 @@ function createHarness(
       listeners.forEach((listener) => listener());
       return 'updated';
     }),
+    revealVotingRound: jest.fn((sessionId, roundId, currentUser, timestamp) => {
+      const session = document.sessions.find((candidate) => candidate.id === sessionId);
+      if (session === undefined || session.status !== 'Active') return 'invalid-session';
+      const round = session.rounds.find((candidate) => candidate.id === roundId);
+      if (round?.status === 'Revealed' || round?.status === 'Finalized') return 'already-revealed';
+      if (round === undefined || session.activeRoundId !== roundId || round.status !== 'Voting') {
+        return 'invalid-round';
+      }
+      if (!document.team.hosts.some((host) => host.objectId === currentUser.objectId)) {
+        return 'host-required';
+      }
+      const votedIds = new Set(round.votes.map((vote) => vote.participantId));
+      const connected = session.participants.filter(
+        (participant) => participant.presence.connection === 'Connected'
+      );
+      const revealed = {
+        ...round,
+        status: 'Revealed' as const,
+        revealedAt: timestamp,
+        revealedBy: currentUser,
+        revealReason: 'Manual' as const,
+        revealedVotedCount: round.votes.length,
+        revealedMissingCount: connected.filter((participant) => !votedIds.has(participant.id))
+          .length,
+        timer: {
+          configuredDurationSeconds: round.timer.configuredDurationSeconds,
+          status: 'Stopped' as const,
+          remainingSeconds: round.timer.remainingSeconds,
+          stoppedAt: timestamp
+        }
+      };
+      document = {
+        ...document,
+        sessions: document.sessions.map((candidate) =>
+          candidate.id === sessionId
+            ? {
+                ...candidate,
+                rounds: candidate.rounds.map((item) => (item.id === roundId ? revealed : item)),
+                updatedAt: timestamp
+              }
+            : candidate
+        ),
+        updatedAt: timestamp
+      };
+      listeners.forEach((listener) => listener());
+      return 'revealed';
+    }),
+    undoVotingRoundReveal: jest.fn((sessionId, roundId, currentUser, timestamp) => {
+      const session = document.sessions.find((candidate) => candidate.id === sessionId);
+      if (session === undefined || session.status !== 'Active') return 'invalid-session';
+      if (!document.team.hosts.some((host) => host.objectId === currentUser.objectId)) {
+        return 'host-required';
+      }
+      const round = session.rounds.find((candidate) => candidate.id === roundId);
+      if (round === undefined || session.activeRoundId !== roundId || round.status !== 'Revealed') {
+        return 'invalid-round';
+      }
+      document = {
+        ...document,
+        sessions: document.sessions.map((candidate) =>
+          candidate.id === sessionId
+            ? {
+                ...candidate,
+                rounds: candidate.rounds.map((item) =>
+                  item.id === roundId
+                    ? {
+                        ...item,
+                        status: 'Voting',
+                        revealedAt: undefined,
+                        revealedBy: undefined,
+                        revealReason: undefined,
+                        revealedVotedCount: undefined,
+                        revealedMissingCount: undefined
+                      }
+                    : item
+                ),
+                updatedAt: timestamp
+              }
+            : candidate
+        ),
+        updatedAt: timestamp
+      };
+      listeners.forEach((listener) => listener());
+      return 'reopened';
+    }),
+    finalizeVotingRound: jest.fn((sessionId, roundId, scaleValue, currentUser, timestamp) => {
+      const session = document.sessions.find((candidate) => candidate.id === sessionId);
+      if (session === undefined || session.status !== 'Active') return 'invalid-session';
+      if (!document.team.hosts.some((host) => host.objectId === currentUser.objectId)) {
+        return 'host-required';
+      }
+      const round = session.rounds.find((candidate) => candidate.id === roundId);
+      if (round?.status === 'Finalized') {
+        if (round.assignedValue === scaleValue) return 'already-finalized';
+        if (session.settings.scaleValues.indexOf(scaleValue) < 0) return 'invalid-estimate';
+        const story = document.stories.find(
+          (candidate) => candidate.id === round.storyId && candidate.status === 'Pointed'
+        );
+        if (story === undefined) return 'invalid-story';
+        document = {
+          ...document,
+          stories: document.stories.map((candidate) =>
+            candidate.id === story.id
+              ? {
+                  ...candidate,
+                  currentEstimate: scaleValue,
+                  estimateHistory: [
+                    ...candidate.estimateHistory,
+                    {
+                      sessionId,
+                      roundId,
+                      value: scaleValue,
+                      finalizedAt: timestamp,
+                      finalizedBy: currentUser
+                    }
+                  ],
+                  updatedAt: timestamp,
+                  updatedBy: currentUser
+                }
+              : candidate
+          ),
+          sessions: document.sessions.map((candidate) =>
+            candidate.id === sessionId
+              ? {
+                  ...candidate,
+                  rounds: candidate.rounds.map((item) =>
+                    item.id === roundId
+                      ? {
+                          ...item,
+                          assignedValue: scaleValue,
+                          finalizedAt: timestamp,
+                          finalizedBy: currentUser
+                        }
+                      : item
+                  ),
+                  updatedAt: timestamp
+                }
+              : candidate
+          ),
+          updatedAt: timestamp
+        };
+        listeners.forEach((listener) => listener());
+        return 'finalized';
+      }
+      if (round === undefined || session.activeRoundId !== roundId || round.status !== 'Revealed') {
+        return 'invalid-round';
+      }
+      if (session.settings.scaleValues.indexOf(scaleValue) < 0) return 'invalid-estimate';
+      const story = document.stories.find(
+        (candidate) => candidate.id === round.storyId && candidate.status === 'Ready'
+      );
+      if (story === undefined) return 'invalid-story';
+      document = {
+        ...document,
+        stories: document.stories.map((candidate) =>
+          candidate.id === story.id
+            ? {
+                ...candidate,
+                status: 'Pointed',
+                currentEstimate: scaleValue,
+                estimateHistory: [
+                  ...candidate.estimateHistory,
+                  {
+                    sessionId,
+                    roundId,
+                    value: scaleValue,
+                    finalizedAt: timestamp,
+                    finalizedBy: currentUser
+                  }
+                ],
+                updatedAt: timestamp,
+                updatedBy: currentUser
+              }
+            : candidate
+        ),
+        sessions: document.sessions.map((candidate) =>
+          candidate.id === sessionId
+            ? {
+                ...candidate,
+                rounds: candidate.rounds.map((item) =>
+                  item.id === roundId
+                    ? {
+                        ...item,
+                        status: 'Finalized',
+                        assignedValue: scaleValue,
+                        finalizedAt: timestamp,
+                        finalizedBy: currentUser
+                      }
+                    : item
+                ),
+                activeRoundId: undefined,
+                finalizedRoundIds: [...candidate.finalizedRoundIds, roundId],
+                updatedAt: timestamp
+              }
+            : candidate
+        ),
+        updatedAt: timestamp
+      };
+      listeners.forEach((listener) => listener());
+      return 'finalized';
+    }),
     setVotingParticipantConnection: jest.fn((sessionId, participantId, connection, timestamp) => {
       document = {
         ...document,
@@ -598,6 +799,84 @@ describe('VotingSessionService', () => {
     await expect(harness.service.startTimer(host, roundId)).rejects.toMatchObject({
       code: 'invalid-timer-command',
       message: 'The timer has already moved to another state.'
+    });
+  });
+
+  it('reveals early and retries idempotent finalization after metadata failure', async () => {
+    const story = {
+      id: 'reveal-story',
+      title: 'Reveal story',
+      description: '',
+      status: 'Ready' as const,
+      estimateHistory: [],
+      createdAt: fixtureDocument.createdAt,
+      createdBy: fixtureUser,
+      updatedAt: fixtureDocument.updatedAt,
+      updatedBy: fixtureUser
+    };
+    let nextId = 0;
+    const harness = createHarness(
+      { ...fixtureDocument, stories: [story] },
+      fixtureUser,
+      undefined,
+      () => `reveal-${(nextId += 1)}`
+    );
+    const guestService = new VotingSessionService(
+      new TeamRepository(storage, harness.store),
+      { objectId: 'guest', displayName: 'Guest', loginName: 'guest@example.com' },
+      () => 'guest-participant',
+      () => '2026-07-11T12:30:00.000Z'
+    );
+    const prepared = await harness.service.prepareSession(summary);
+    const host = await harness.service.joinSession(summary.teamId, prepared.getSession().id);
+    await guestService.joinSession(summary.teamId, prepared.getSession().id);
+    await harness.service.startVoting(host);
+    await harness.service.selectStory(host, story.id);
+    const roundId = host.getSession().activeRoundId as string;
+    await harness.service.castVote(host, roundId, '3');
+
+    await harness.service.revealResults(host, roundId);
+
+    expect(host.getSession().rounds[0]).toMatchObject({
+      status: 'Revealed',
+      revealReason: 'Manual',
+      revealedVotedCount: 1,
+      revealedMissingCount: 1,
+      timer: { status: 'Stopped' }
+    });
+    await harness.service.undoReveal(host, roundId);
+    expect(host.getSession().rounds[0]).toMatchObject({
+      status: 'Voting',
+      votes: [expect.objectContaining({ value: '3' })],
+      timer: { status: 'Stopped' }
+    });
+    expect(host.getSession().rounds[0].revealedAt).toBeUndefined();
+    await harness.service.revealResults(host, roundId);
+    await expect(harness.service.finalizeEstimate(host, roundId, '100')).rejects.toMatchObject({
+      code: 'invalid-estimate'
+    });
+    jest.mocked(harness.store.updateMetadata).mockRejectedValueOnce(new Error('metadata failed'));
+    await expect(harness.service.finalizeEstimate(host, roundId, '5')).rejects.toMatchObject({
+      code: 'save-failure'
+    });
+
+    await expect(harness.service.finalizeEstimate(host, roundId, '5')).resolves.toMatchObject({
+      finalizedRoundIds: [roundId]
+    });
+    expect(harness.getDocument().stories[0]).toMatchObject({
+      status: 'Pointed',
+      currentEstimate: '5',
+      estimateHistory: [expect.objectContaining({ sessionId: prepared.getSession().id, roundId })]
+    });
+    expect(harness.getDocument().stories[0].estimateHistory).toHaveLength(1);
+    await harness.service.finalizeEstimate(host, roundId, '8');
+    expect(host.getSession().finalizedRoundIds).toEqual([roundId]);
+    expect(harness.getDocument().stories[0]).toMatchObject({
+      currentEstimate: '8',
+      estimateHistory: [
+        expect.objectContaining({ value: '5' }),
+        expect.objectContaining({ value: '8' })
+      ]
     });
   });
 

@@ -47,7 +47,8 @@ jest.mock('fluid-framework', () => ({
   }))
 }));
 
-import { Tree } from '@fluidframework/tree';
+import { SchemaFactory, Tree, TreeViewConfiguration } from '@fluidframework/tree';
+import { createIndependentTreeBeta } from '@fluidframework/tree/beta';
 import { fixtureDocument, fixtureUser } from '../domain/planningPokerFixtures';
 import type { PlanningPokerDocumentRoot, VotingSession } from '../domain/planningPokerDomain';
 import type {
@@ -78,6 +79,132 @@ const storage: IPlanningPokerStorageConfiguration = {
 };
 
 const tokenProvider = createOdspTokenProvider(storage.webAbsoluteUrl, async () => 'token');
+const legacyFactory = new SchemaFactory('planning-poker');
+const legacyStringList = legacyFactory.array(legacyFactory.string);
+const LegacyUserReferenceSchema = legacyFactory.object('UserReference', {
+  objectId: legacyFactory.string,
+  displayName: legacyFactory.string,
+  loginName: legacyFactory.string,
+  sharePointUserId: legacyFactory.optional(legacyFactory.number)
+});
+const LegacyTeamSettingsSchema = legacyFactory.object('TeamSettings', {
+  scaleKind: legacyFactory.string,
+  scaleValues: legacyStringList,
+  timerEnabled: legacyFactory.boolean,
+  timerDurationSeconds: legacyFactory.optional(legacyFactory.number),
+  votingMode: legacyFactory.string
+});
+const LegacyTeamSchema = legacyFactory.object('PlanningPokerTeam', {
+  id: legacyFactory.string,
+  title: legacyFactory.string,
+  description: legacyFactory.string,
+  isActive: legacyFactory.boolean,
+  hosts: legacyFactory.array(LegacyUserReferenceSchema),
+  configuredMembers: legacyFactory.array(LegacyUserReferenceSchema),
+  settings: LegacyTeamSettingsSchema,
+  createdAt: legacyFactory.string,
+  createdBy: LegacyUserReferenceSchema,
+  updatedAt: legacyFactory.string,
+  updatedBy: LegacyUserReferenceSchema
+});
+const LegacyEstimateHistoryEntrySchema = legacyFactory.object('EstimateHistoryEntry', {
+  sessionId: legacyFactory.string,
+  roundId: legacyFactory.string,
+  value: legacyFactory.string,
+  finalizedAt: legacyFactory.string,
+  finalizedBy: LegacyUserReferenceSchema
+});
+const LegacyStorySchema = legacyFactory.object('PointingStory', {
+  id: legacyFactory.string,
+  title: legacyFactory.string,
+  description: legacyFactory.string,
+  link: legacyFactory.optional(legacyFactory.string),
+  status: legacyFactory.string,
+  currentEstimate: legacyFactory.optional(legacyFactory.string),
+  estimateHistory: legacyFactory.array(LegacyEstimateHistoryEntrySchema),
+  createdAt: legacyFactory.string,
+  createdBy: LegacyUserReferenceSchema,
+  updatedAt: legacyFactory.string,
+  updatedBy: LegacyUserReferenceSchema
+});
+const LegacyPresenceSchema = legacyFactory.object('ParticipantPresence', {
+  connection: legacyFactory.string,
+  lastSeenAt: legacyFactory.string
+});
+const LegacyNamedParticipantSchema = legacyFactory.object('NamedSessionParticipant', {
+  kind: legacyFactory.string,
+  id: legacyFactory.string,
+  user: LegacyUserReferenceSchema,
+  joinedAt: legacyFactory.string,
+  presence: LegacyPresenceSchema
+});
+const LegacyAnonymousParticipantSchema = legacyFactory.object('AnonymousSessionParticipant', {
+  kind: legacyFactory.string,
+  id: legacyFactory.string,
+  alias: legacyFactory.string,
+  joinedAt: legacyFactory.string,
+  presence: LegacyPresenceSchema
+});
+const LegacyStorySnapshotSchema = legacyFactory.object('StorySnapshot', {
+  storyId: legacyFactory.string,
+  title: legacyFactory.string,
+  description: legacyFactory.string,
+  link: legacyFactory.optional(legacyFactory.string)
+});
+const LegacyVoteSchema = legacyFactory.object('VoteRecord', {
+  participantId: legacyFactory.string,
+  value: legacyFactory.string,
+  castAt: legacyFactory.string
+});
+const LegacyTimerSchema = legacyFactory.object('VotingTimer', {
+  configuredDurationSeconds: legacyFactory.number,
+  status: legacyFactory.string,
+  remainingSeconds: legacyFactory.number,
+  startedAt: legacyFactory.optional(legacyFactory.string),
+  stoppedAt: legacyFactory.optional(legacyFactory.string),
+  resetAt: legacyFactory.optional(legacyFactory.string)
+});
+const LegacyRoundSchema = legacyFactory.object('StoryVotingRound', {
+  id: legacyFactory.string,
+  storyId: legacyFactory.string,
+  storySnapshot: LegacyStorySnapshotSchema,
+  status: legacyFactory.string,
+  votes: legacyFactory.array(LegacyVoteSchema),
+  timer: LegacyTimerSchema,
+  revealedAt: legacyFactory.optional(legacyFactory.string),
+  revealedBy: legacyFactory.optional(LegacyUserReferenceSchema),
+  assignedValue: legacyFactory.optional(legacyFactory.string),
+  finalizedAt: legacyFactory.optional(legacyFactory.string),
+  finalizedBy: legacyFactory.optional(LegacyUserReferenceSchema)
+});
+const LegacySessionSchema = legacyFactory.object('VotingSession', {
+  id: legacyFactory.string,
+  teamId: legacyFactory.string,
+  status: legacyFactory.string,
+  settings: LegacyTeamSettingsSchema,
+  participants: legacyFactory.array([
+    LegacyNamedParticipantSchema,
+    LegacyAnonymousParticipantSchema
+  ]),
+  rounds: legacyFactory.array(LegacyRoundSchema),
+  activeRoundId: legacyFactory.optional(legacyFactory.string),
+  finalizedRoundIds: legacyStringList,
+  endedAt: legacyFactory.optional(legacyFactory.string),
+  endedBy: legacyFactory.optional(LegacyUserReferenceSchema),
+  createdAt: legacyFactory.string,
+  createdBy: legacyFactory.optional(LegacyUserReferenceSchema),
+  updatedAt: legacyFactory.string,
+  updatedBy: legacyFactory.optional(LegacyUserReferenceSchema)
+});
+const LegacyDocumentSchema = legacyFactory.object('PlanningPokerDocumentRoot', {
+  schemaVersion: legacyFactory.string,
+  team: LegacyTeamSchema,
+  stories: legacyFactory.array(LegacyStorySchema),
+  sessions: legacyFactory.array(LegacySessionSchema),
+  openSessionId: legacyFactory.optional(legacyFactory.string),
+  createdAt: legacyFactory.string,
+  updatedAt: legacyFactory.string
+});
 
 function createDriveService(): jest.Mocked<IPlanningPokerDriveService> {
   return {
@@ -268,6 +395,22 @@ describe('OdspTeamDocumentStore', () => {
     ).toMatchObject({ id: 'participant-1', kind: 'Named' });
     expect((root as PlanningPokerDocumentRoot).sessions).toBe(sessionsBeforeJoin);
     expect(handle.getSnapshot().sessions[0].participants).toHaveLength(1);
+    expect(
+      handle.joinVotingSession(
+        lobby.id,
+        {
+          kind: 'Named',
+          participantId: 'participant-2',
+          user: {
+            ...fixtureUser,
+            objectId: '00000000-0000-0000-0000-000000000002',
+            displayName: 'Second Voter',
+            loginName: 'second@example.com'
+          }
+        },
+        fixtureDocument.updatedAt
+      )
+    ).toMatchObject({ id: 'participant-2', kind: 'Named' });
     const readyStory = {
       id: 'story-1',
       teamId: fixtureDocument.team.id,
@@ -354,6 +497,19 @@ describe('OdspTeamDocumentStore', () => {
       )
     ).toBe('invalid-command');
     expect(
+      handle.revealVotingRound(
+        lobby.id,
+        'round-2',
+        {
+          ...fixtureUser,
+          objectId: 'not-a-host',
+          displayName: 'Participant User',
+          loginName: 'participant@example.com'
+        },
+        '2026-07-10T00:01:54.000Z'
+      )
+    ).toBe('host-required');
+    expect(
       handle.updateVotingTimer(lobby.id, 'round-2', 'stop', fixtureUser, '2026-07-10T00:01:30.000Z')
     ).toBe('updated');
     expect(handle.getSnapshot().sessions[0].rounds[1].timer).toMatchObject({
@@ -402,6 +558,65 @@ describe('OdspTeamDocumentStore', () => {
         '2026-07-10T00:01:53.000Z'
       )
     ).toBe('invalid-command');
+    expect(
+      handle.castVotingVote(lobby.id, 'round-2', {
+        participantId: 'participant-2',
+        value: '3',
+        castAt: '2026-07-10T00:02:00.000Z'
+      })
+    ).toBe('cast');
+    expect(handle.getSnapshot().sessions[0].rounds[1]).toMatchObject({
+      status: 'Revealed',
+      revealReason: 'Automatic',
+      revealedVotedCount: 2,
+      revealedMissingCount: 0,
+      timer: { status: 'Stopped' }
+    });
+    expect(
+      handle.castVotingVote(lobby.id, 'round-2', {
+        participantId: 'participant-1',
+        value: '8',
+        castAt: '2026-07-10T00:02:00.500Z'
+      })
+    ).toBe('invalid-round');
+    expect(
+      handle.revealVotingRound(lobby.id, 'round-2', fixtureUser, '2026-07-10T00:02:01.000Z')
+    ).toBe('already-revealed');
+    expect(
+      handle.finalizeVotingRound(
+        lobby.id,
+        'round-2',
+        '100',
+        fixtureUser,
+        '2026-07-10T00:02:02.000Z'
+      )
+    ).toBe('invalid-estimate');
+    expect(
+      handle.finalizeVotingRound(lobby.id, 'round-2', '5', fixtureUser, '2026-07-10T00:02:03.000Z')
+    ).toBe('finalized');
+    expect(handle.getSnapshot().stories[1]).toMatchObject({
+      status: 'Pointed',
+      currentEstimate: '5',
+      estimateHistory: [expect.objectContaining({ sessionId: lobby.id, roundId: 'round-2' })]
+    });
+    expect(
+      handle.finalizeVotingRound(lobby.id, 'round-2', '5', fixtureUser, '2026-07-10T00:02:04.000Z')
+    ).toBe('already-finalized');
+    const finalizedSession = handle.getSnapshot().sessions[0];
+    handle.updateSessions(
+      [
+        {
+          ...finalizedSession,
+          activeRoundId: 'round-2',
+          finalizedRoundIds: [],
+          rounds: finalizedSession.rounds.map((round) =>
+            round.id === 'round-2' ? { ...round, status: 'Voting' as const } : round
+          )
+        }
+      ],
+      lobby.id,
+      '2026-07-10T00:02:05.000Z'
+    );
     const currentSession = handle.getSnapshot().sessions[0];
     handle.updateSessions(
       [
@@ -540,7 +755,7 @@ describe('OdspTeamDocumentStore', () => {
     expect(container.dispose).toHaveBeenCalledTimes(1);
   });
 
-  it('waits for a loaded container to catch up before reading session state', async () => {
+  it('waits for a loaded container and applies a writable schema upgrade before reading state', async () => {
     const openSession = {
       id: 'session-current',
       teamId: fixtureDocument.team.id,
@@ -556,7 +771,7 @@ describe('OdspTeamDocumentStore', () => {
     };
     let root: unknown = fixtureDocument;
     let connectionState = 1;
-    let canView = false;
+    let canView = true;
     const view = {
       get compatibility(): { canInitialize: boolean; canView: boolean; canUpgrade: boolean } {
         return { canInitialize: false, canView, canUpgrade: true };
@@ -612,6 +827,230 @@ describe('OdspTeamDocumentStore', () => {
     });
     expect(container.off).toHaveBeenCalledWith('connected', expect.any(Function));
     expect(view.upgradeSchema).toHaveBeenCalledTimes(1);
+    handle.dispose();
+  });
+
+  it('upgrades and reveals a voting round created with the pre-results SharedTree schema', async () => {
+    const timestamp = '2026-07-10T00:02:00.000Z';
+    const story = {
+      id: 'story-1',
+      teamId: fixtureDocument.team.id,
+      title: 'Real tree story',
+      description: 'Exercises Fluid mutation validation.',
+      status: 'Ready' as const,
+      estimateHistory: [],
+      createdAt: fixtureDocument.createdAt,
+      createdBy: fixtureUser,
+      updatedAt: fixtureDocument.updatedAt,
+      updatedBy: fixtureUser
+    };
+    const secondStory = { ...story, id: 'story-2', title: 'Second real tree story' };
+    const session: VotingSession = {
+      id: 'session-1',
+      teamId: fixtureDocument.team.id,
+      status: 'Active',
+      settings: fixtureDocument.team.settings,
+      participants: [
+        {
+          kind: 'Named',
+          id: 'participant-1',
+          user: fixtureUser,
+          joinedAt: fixtureDocument.createdAt,
+          presence: { connection: 'Connected', lastSeenAt: fixtureDocument.createdAt }
+        },
+        {
+          kind: 'Named',
+          id: 'participant-2',
+          user: {
+            ...fixtureUser,
+            objectId: '00000000-0000-0000-0000-000000000002',
+            displayName: 'Second Voter',
+            loginName: 'second@example.com'
+          },
+          joinedAt: fixtureDocument.createdAt,
+          presence: { connection: 'Disconnected', lastSeenAt: fixtureDocument.createdAt }
+        }
+      ],
+      rounds: [
+        {
+          id: 'round-1',
+          storyId: story.id,
+          storySnapshot: {
+            storyId: story.id,
+            title: story.title,
+            description: story.description
+          },
+          status: 'Voting',
+          votes: [],
+          timer: {
+            configuredDurationSeconds: 300,
+            status: 'Stopped',
+            remainingSeconds: 120,
+            stoppedAt: '2026-07-10T00:01:30.000Z'
+          }
+        }
+      ],
+      activeRoundId: 'round-1',
+      finalizedRoundIds: [],
+      createdAt: fixtureDocument.createdAt,
+      createdBy: fixtureUser,
+      updatedAt: fixtureDocument.updatedAt,
+      updatedBy: fixtureUser
+    };
+    const tree = createIndependentTreeBeta();
+    const legacyView = tree.viewWith(
+      new TreeViewConfiguration({
+        schema: LegacyDocumentSchema,
+        enableSchemaValidation: true
+      })
+    );
+    legacyView.initialize({
+      ...fixtureDocument,
+      stories: [story, secondStory],
+      sessions: [session],
+      openSessionId: session.id
+    } as never);
+    legacyView.dispose();
+    const container = {
+      initialObjects: {
+        appTree: {
+          viewWith: jest.fn((configuration: Parameters<typeof tree.viewWith>[0]) =>
+            tree.viewWith(configuration)
+          )
+        }
+      },
+      connectionState: 2,
+      isDirty: false,
+      connect: jest.fn(),
+      on: jest.fn(),
+      off: jest.fn(),
+      dispose: jest.fn()
+    };
+    const services = { dispose: jest.fn() };
+    mockGetContainer.mockResolvedValueOnce({ container, services });
+    const store = new OdspTeamDocumentStore(
+      storage,
+      createTransport(async () => ({ value: [] })),
+      createDriveService(),
+      tokenProvider
+    );
+
+    const handle = await store.load('drive-item-id');
+    const connectedSecondAttendee = { getConnectionStatus: () => 'Connected' };
+    mockPresenceAttendees.add(connectedSecondAttendee);
+    mockPresenceBindings.set(connectedSecondAttendee, {
+      sessionId: session.id,
+      participantId: 'participant-2',
+      mode: 'Named'
+    });
+    expect(
+      handle.joinVotingSession(
+        session.id,
+        { kind: 'Named', participantId: 'unused-rejoin-id', user: fixtureUser },
+        timestamp
+      )
+    ).toMatchObject({ id: 'participant-1' });
+
+    expect(handle.revealVotingRound(session.id, 'round-1', fixtureUser, timestamp)).toBe(
+      'revealed'
+    );
+    expect(handle.getSnapshot().sessions[0].rounds[0]).toMatchObject({
+      status: 'Revealed',
+      revealedAt: timestamp,
+      revealedBy: fixtureUser,
+      revealReason: 'Manual',
+      revealedVotedCount: 0,
+      revealedMissingCount: 2,
+      timer: {
+        configuredDurationSeconds: 300,
+        status: 'Stopped',
+        remainingSeconds: 120,
+        stoppedAt: '2026-07-10T00:01:30.000Z'
+      }
+    });
+    expect(
+      handle.undoVotingRoundReveal(
+        session.id,
+        'round-1',
+        { ...fixtureUser, objectId: 'not-a-host' },
+        timestamp
+      )
+    ).toBe('host-required');
+    expect(handle.undoVotingRoundReveal(session.id, 'round-1', fixtureUser, timestamp)).toBe(
+      'reopened'
+    );
+    expect(handle.getSnapshot().sessions[0].rounds[0]).toEqual(
+      expect.objectContaining({
+        status: 'Voting',
+        votes: [],
+        timer: expect.objectContaining({ status: 'Stopped', remainingSeconds: 120 })
+      })
+    );
+    expect(handle.getSnapshot().sessions[0].rounds[0].revealedAt).toBeUndefined();
+    expect(handle.revealVotingRound(session.id, 'round-1', fixtureUser, timestamp)).toBe(
+      'revealed'
+    );
+    expect(handle.finalizeVotingRound(session.id, 'round-1', '3', fixtureUser, timestamp)).toBe(
+      'finalized'
+    );
+    expect(
+      handle.selectVotingStory(
+        session.id,
+        secondStory.id,
+        'round-2',
+        fixtureUser,
+        false,
+        '2026-07-10T00:03:00.000Z'
+      )
+    ).toBe('selected');
+    expect(
+      handle.castVotingVote(session.id, 'round-2', {
+        participantId: 'participant-1',
+        value: '5',
+        castAt: '2026-07-10T00:04:00.000Z'
+      })
+    ).toBe('cast');
+    expect(handle.getSnapshot().sessions[0].rounds[1]).toMatchObject({ status: 'Voting' });
+    expect(
+      handle.castVotingVote(session.id, 'round-2', {
+        participantId: 'participant-2',
+        value: '3',
+        castAt: '2026-07-10T00:04:30.000Z'
+      })
+    ).toBe('cast');
+    expect(handle.getSnapshot().sessions[0].rounds[1]).toMatchObject({
+      status: 'Revealed',
+      revealReason: 'Automatic'
+    });
+    expect(
+      handle.finalizeVotingRound(
+        session.id,
+        'round-2',
+        '5',
+        fixtureUser,
+        '2026-07-10T00:05:00.000Z'
+      )
+    ).toBe('finalized');
+    expect(
+      handle.finalizeVotingRound(
+        session.id,
+        'round-2',
+        '8',
+        fixtureUser,
+        '2026-07-10T00:06:00.000Z'
+      )
+    ).toBe('finalized');
+    expect(handle.getSnapshot().stories).toEqual([
+      expect.objectContaining({ id: story.id, currentEstimate: '3' }),
+      expect.objectContaining({
+        id: secondStory.id,
+        currentEstimate: '8',
+        estimateHistory: [
+          expect.objectContaining({ value: '5' }),
+          expect.objectContaining({ value: '8' })
+        ]
+      })
+    ]);
     handle.dispose();
   });
 

@@ -32,6 +32,11 @@ Changing a vote replaces the existing record and leaves the voted participant
 count unchanged. Each accepted mutation waits for Fluid save acknowledgement.
 Per-vote SharePoint metadata updates are deliberately avoided.
 
+The final connected participant's accepted vote reveals the round in the same
+transaction. Later vote attempts are rejected because a `Revealed` round is
+frozen. Hosts may reveal early after at least one vote; estimate assignment is a
+separate host action described in `docs/voting-results.md`.
+
 ## Pre-Reveal Privacy and Links
 
 The supported UI exposes a participant's own selection and only voted/not-voted

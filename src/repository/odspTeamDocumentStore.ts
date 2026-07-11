@@ -111,6 +111,23 @@ interface IMutableVotingRound {
   status: StoryVotingRound['status'];
   readonly votes: readonly VoteRecord[];
   timer: VotingTimer;
+  revealedAt?: string;
+  revealedBy?: UserReference;
+  revealReason?: StoryVotingRound['revealReason'];
+  revealedVotedCount?: number;
+  revealedMissingCount?: number;
+  assignedValue?: string;
+  finalizedAt?: string;
+  finalizedBy?: UserReference;
+}
+
+interface IMutablePointingStory {
+  readonly id: string;
+  status: PointingStory['status'];
+  currentEstimate?: string;
+  readonly estimateHistory: PointingStory['estimateHistory'];
+  updatedAt: string;
+  updatedBy: UserReference;
 }
 
 interface IMutableVoteRecord {
@@ -160,6 +177,21 @@ function removeTreeItemAt<T>(items: readonly T[], index: number): void {
   } else {
     mutable.splice(index, 1);
   }
+}
+
+/**
+ * Creates a detached user value that can be inserted into a new SharedTree field.
+ *
+ * @param user - Plain or hydrated user reference to copy.
+ * @returns An insertable identity value with no existing tree parent.
+ */
+function copyUserReference(user: UserReference): UserReference {
+  return {
+    objectId: user.objectId,
+    displayName: user.displayName,
+    loginName: user.loginName,
+    ...(user.sharePointUserId === undefined ? {} : { sharePointUserId: user.sharePointUserId })
+  };
 }
 
 /**
@@ -307,7 +339,7 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
       }
       const view = container.initialObjects.appTree.viewWith(treeConfiguration);
       const untypedView = view as unknown as ITreeRootView;
-      if (!untypedView.compatibility.canView && untypedView.compatibility.canUpgrade === true) {
+      if (untypedView.compatibility.canUpgrade === true) {
         untypedView.upgradeSchema();
       }
       if (!untypedView.compatibility.canView) {
@@ -510,6 +542,13 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
         );
       });
     };
+    const isParticipantConnected = (sessionId: string, participant: SessionParticipant): boolean =>
+      participant.presence.connection === 'Connected' ||
+      hasConnectedBinding({
+        sessionId,
+        participantId: participant.id,
+        mode: participant.kind
+      });
     const handlePresenceConnected = (binding: IParticipantPresenceBinding): void => {
       if (binding.mode !== 'None') {
         setParticipantConnection(
@@ -599,6 +638,50 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
         );
       }
       schedulePresenceReconciliation();
+    };
+    const stopTimerForReveal = (round: StoryVotingRound, timestamp: string): VotingTimer => {
+      const elapsedMilliseconds =
+        round.timer.status === 'Running' && round.timer.startedAt !== undefined
+          ? Date.parse(timestamp) - Date.parse(round.timer.startedAt)
+          : 0;
+      const elapsedSeconds = Number.isFinite(elapsedMilliseconds)
+        ? Math.max(0, Math.floor(elapsedMilliseconds / 1000))
+        : 0;
+      return {
+        configuredDurationSeconds: round.timer.configuredDurationSeconds,
+        status: 'Stopped',
+        remainingSeconds: Math.max(0, round.timer.remainingSeconds - elapsedSeconds),
+        stoppedAt: timestamp
+      };
+    };
+    const revealRound = (
+      session: VotingSession,
+      round: StoryVotingRound,
+      reason: import('../domain/planningPokerDomain').RevealReason,
+      currentUser: UserReference | undefined,
+      timestamp: string
+    ): void => {
+      const connectedParticipants = session.participants.filter((participant) =>
+        isParticipantConnected(session.id, participant)
+      );
+      const votedIds = new Set(round.votes.map((vote) => vote.participantId));
+      const mutableRound = round as unknown as IMutableVotingRound;
+      mutableRound.status = 'Revealed';
+      mutableRound.revealedAt = timestamp;
+      mutableRound.revealReason = reason;
+      mutableRound.revealedVotedCount = round.votes.length;
+      mutableRound.revealedMissingCount = connectedParticipants.filter(
+        (participant) => !votedIds.has(participant.id)
+      ).length;
+      if (
+        currentUser !== undefined &&
+        (reason === 'Manual' || session.settings.votingMode === 'Named')
+      ) {
+        mutableRound.revealedBy = copyUserReference(currentUser);
+      }
+      if (session.settings.timerEnabled && round.timer.status !== 'Stopped') {
+        mutableRound.timer = stopTimerForReveal(round, timestamp);
+      }
     };
     return {
       teamId,
@@ -828,6 +911,25 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
           }
           session.updatedAt = vote.castAt;
           document.updatedAt = vote.castAt;
+          const connectedParticipants = sessionNode.participants.filter((participant) =>
+            isParticipantConnected(sessionNode.id, participant)
+          );
+          const votedIds = new Set(round.votes.map((candidate) => candidate.participantId));
+          if (
+            connectedParticipants.length > 0 &&
+            connectedParticipants.every((participant) => votedIds.has(participant.id))
+          ) {
+            const participant = sessionNode.participants.find(
+              (candidate) => candidate.id === vote.participantId
+            );
+            revealRound(
+              sessionNode,
+              round,
+              'Automatic',
+              participant?.kind === 'Named' ? participant.user : undefined,
+              vote.castAt
+            );
+          }
           result = 'cast';
         });
         return result;
@@ -909,6 +1011,184 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
           session.updatedAt = timestamp;
           document.updatedAt = timestamp;
           result = 'updated';
+        });
+        return result;
+      },
+      revealVotingRound: (sessionId, roundId, currentUser, timestamp) => {
+        let result: import('./teamRepository').VotingRevealResult = 'invalid-session';
+        Tree.runTransaction(view, (root) => {
+          const document = root as unknown as IMutableDocumentRoot;
+          const sessionNode = document.sessions.find(
+            (candidate) =>
+              candidate.id === sessionId &&
+              candidate.id === document.openSessionId &&
+              candidate.status === 'Active'
+          );
+          if (sessionNode === undefined) {
+            return;
+          }
+          const round = sessionNode.rounds.find((candidate) => candidate.id === roundId);
+          if (round?.status === 'Revealed' || round?.status === 'Finalized') {
+            result = 'already-revealed';
+            return;
+          }
+          if (
+            round === undefined ||
+            round.id !== sessionNode.activeRoundId ||
+            round.status !== 'Voting'
+          ) {
+            result = 'invalid-round';
+            return;
+          }
+          if (!document.team.hosts.some((host) => host.objectId === currentUser.objectId)) {
+            result = 'host-required';
+            return;
+          }
+          revealRound(sessionNode, round, 'Manual', currentUser, timestamp);
+          const session = sessionNode as unknown as IMutableVotingSession;
+          session.updatedAt = timestamp;
+          document.updatedAt = timestamp;
+          result = 'revealed';
+        });
+        return result;
+      },
+      undoVotingRoundReveal: (sessionId, roundId, currentUser, timestamp) => {
+        let result: import('./teamRepository').VotingUndoRevealResult = 'invalid-session';
+        Tree.runTransaction(view, (root) => {
+          const document = root as unknown as IMutableDocumentRoot;
+          const sessionNode = document.sessions.find(
+            (candidate) =>
+              candidate.id === sessionId &&
+              candidate.id === document.openSessionId &&
+              candidate.status === 'Active'
+          );
+          if (sessionNode === undefined) {
+            return;
+          }
+          if (!document.team.hosts.some((host) => host.objectId === currentUser.objectId)) {
+            result = 'host-required';
+            return;
+          }
+          const round = sessionNode.rounds.find((candidate) => candidate.id === roundId);
+          if (
+            round === undefined ||
+            round.id !== sessionNode.activeRoundId ||
+            round.status !== 'Revealed'
+          ) {
+            result = 'invalid-round';
+            return;
+          }
+          const mutableRound = round as unknown as IMutableVotingRound;
+          mutableRound.status = 'Voting';
+          mutableRound.revealedAt = undefined;
+          mutableRound.revealedBy = undefined;
+          mutableRound.revealReason = undefined;
+          mutableRound.revealedVotedCount = undefined;
+          mutableRound.revealedMissingCount = undefined;
+          const session = sessionNode as unknown as IMutableVotingSession;
+          session.updatedAt = timestamp;
+          document.updatedAt = timestamp;
+          result = 'reopened';
+        });
+        return result;
+      },
+      finalizeVotingRound: (sessionId, roundId, scaleValue, currentUser, timestamp) => {
+        let result: import('./teamRepository').VotingFinalizeResult = 'invalid-session';
+        Tree.runTransaction(view, (root) => {
+          const document = root as unknown as IMutableDocumentRoot;
+          const sessionNode = document.sessions.find(
+            (candidate) =>
+              candidate.id === sessionId &&
+              candidate.id === document.openSessionId &&
+              candidate.status === 'Active'
+          );
+          if (sessionNode === undefined) {
+            return;
+          }
+          if (!document.team.hosts.some((host) => host.objectId === currentUser.objectId)) {
+            result = 'host-required';
+            return;
+          }
+          const round = sessionNode.rounds.find((candidate) => candidate.id === roundId);
+          if (round?.status === 'Finalized') {
+            if (round.assignedValue === scaleValue) {
+              result = 'already-finalized';
+              return;
+            }
+            if (sessionNode.settings.scaleValues.indexOf(scaleValue) < 0) {
+              result = 'invalid-estimate';
+              return;
+            }
+            const story = document.stories.find(
+              (candidate) => candidate.id === round.storyId && candidate.status === 'Pointed'
+            );
+            if (story === undefined) {
+              result = 'invalid-story';
+              return;
+            }
+            const mutableRound = round as unknown as IMutableVotingRound;
+            mutableRound.assignedValue = scaleValue;
+            mutableRound.finalizedAt = timestamp;
+            mutableRound.finalizedBy = copyUserReference(currentUser);
+            const mutableStory = story as unknown as IMutablePointingStory;
+            mutableStory.currentEstimate = scaleValue;
+            appendTreeItem(mutableStory.estimateHistory, {
+              sessionId,
+              roundId,
+              value: scaleValue,
+              finalizedAt: timestamp,
+              finalizedBy: copyUserReference(currentUser)
+            });
+            mutableStory.updatedAt = timestamp;
+            mutableStory.updatedBy = copyUserReference(currentUser);
+            const session = sessionNode as unknown as IMutableVotingSession;
+            session.updatedAt = timestamp;
+            document.updatedAt = timestamp;
+            result = 'finalized';
+            return;
+          }
+          if (
+            round === undefined ||
+            round.id !== sessionNode.activeRoundId ||
+            round.status !== 'Revealed'
+          ) {
+            result = 'invalid-round';
+            return;
+          }
+          if (sessionNode.settings.scaleValues.indexOf(scaleValue) < 0) {
+            result = 'invalid-estimate';
+            return;
+          }
+          const story = document.stories.find(
+            (candidate) => candidate.id === round.storyId && candidate.status === 'Ready'
+          );
+          if (story === undefined) {
+            result = 'invalid-story';
+            return;
+          }
+          const mutableRound = round as unknown as IMutableVotingRound;
+          mutableRound.status = 'Finalized';
+          mutableRound.assignedValue = scaleValue;
+          mutableRound.finalizedAt = timestamp;
+          mutableRound.finalizedBy = copyUserReference(currentUser);
+          const mutableStory = story as unknown as IMutablePointingStory;
+          mutableStory.status = 'Pointed';
+          mutableStory.currentEstimate = scaleValue;
+          appendTreeItem(mutableStory.estimateHistory, {
+            sessionId,
+            roundId,
+            value: scaleValue,
+            finalizedAt: timestamp,
+            finalizedBy: copyUserReference(currentUser)
+          });
+          mutableStory.updatedAt = timestamp;
+          mutableStory.updatedBy = copyUserReference(currentUser);
+          const session = sessionNode as unknown as IMutableVotingSession;
+          appendTreeItem(sessionNode.finalizedRoundIds, roundId);
+          session.activeRoundId = undefined;
+          session.updatedAt = timestamp;
+          document.updatedAt = timestamp;
+          result = 'finalized';
         });
         return result;
       },

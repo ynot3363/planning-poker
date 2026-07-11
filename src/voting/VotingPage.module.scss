@@ -236,6 +236,72 @@
   padding-block-start: 16px;
 }
 
+.resultsPanel {
+  border-block-start: 1px solid '[theme:neutralLight, default: #edebe9]';
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-block-start: 12px;
+  padding-block-start: 16px;
+}
+
+.resultsTable {
+  border-collapse: collapse;
+  inline-size: 100%;
+}
+
+.resultsTable caption {
+  font-weight: 600;
+  padding-block-end: 8px;
+  text-align: start;
+}
+
+.resultsTable th,
+.resultsTable td {
+  border-block-end: 1px solid '[theme:neutralLight, default: #edebe9]';
+  padding: 8px;
+  text-align: start;
+}
+
+.resultsTable thead th {
+  background: '[theme:neutralLighterAlt, default: #faf9f8]';
+}
+
+.finalEstimateFieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.finalEstimateFieldset legend {
+  font-weight: 600;
+  margin-block-end: 8px;
+}
+
+.assignedEstimate {
+  background: '[theme:greenLight, default: #dff6dd]';
+  border-inline-start: 3px solid '[theme:green, default: #107c10]';
+  font-weight: 600;
+  padding: 12px;
+}
+
+.assignedEstimateRow {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.assignedEstimateRow .assignedEstimate {
+  flex: 1 1 auto;
+}
+
+.finalEstimateActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .storyDetails a {
   overflow-wrap: anywhere;
 }

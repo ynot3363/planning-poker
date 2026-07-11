@@ -26,6 +26,7 @@ export type VotingSessionErrorCode =
   | 'invalid-round'
   | 'invalid-timer-command'
   | 'invalid-vote'
+  | 'invalid-estimate'
   | 'save-failure';
 
 /** An expected session workflow failure containing only safe UI text. */
@@ -78,6 +79,13 @@ export interface IVotingSessionService {
   startTimer(context: VotingSessionContext, roundId: string): Promise<VotingSession>;
   stopTimer(context: VotingSessionContext, roundId: string): Promise<VotingSession>;
   resetTimer(context: VotingSessionContext, roundId: string): Promise<VotingSession>;
+  revealResults(context: VotingSessionContext, roundId: string): Promise<VotingSession>;
+  undoReveal(context: VotingSessionContext, roundId: string): Promise<VotingSession>;
+  finalizeEstimate(
+    context: VotingSessionContext,
+    roundId: string,
+    scaleValue: string
+  ): Promise<VotingSession>;
   subscribe(context: VotingSessionContext, listener: () => void): () => void;
   markDisconnected(context: VotingSessionContext): void;
   closeSession(context: VotingSessionContext): void;
@@ -369,6 +377,122 @@ export class VotingSessionService implements IVotingSessionService {
   /** @inheritdoc */
   public async resetTimer(context: VotingSessionContext, roundId: string): Promise<VotingSession> {
     return this.runTimerCommand(context, roundId, 'reset');
+  }
+
+  /** @inheritdoc */
+  public async revealResults(
+    context: VotingSessionContext,
+    roundId: string
+  ): Promise<VotingSession> {
+    try {
+      const result = context.handle.revealVotingRound(
+        context.getSession().id,
+        roundId,
+        this.currentUser,
+        this.now()
+      );
+      if (result !== 'revealed' && result !== 'already-revealed') {
+        const errors = {
+          'invalid-session': new VotingSessionError(
+            'invalid-session',
+            'This voting session is no longer active.'
+          ),
+          'host-required': new VotingSessionError(
+            'host-required',
+            'Only a current team host can reveal results.'
+          ),
+          'invalid-round': new VotingSessionError(
+            'invalid-round',
+            'Voting has moved to another story.'
+          )
+        } as const;
+        throw errors[result];
+      }
+      await context.handle.waitForSaved();
+      return context.getSession();
+    } catch (error: unknown) {
+      throw this.normalizeError(error);
+    }
+  }
+
+  /** @inheritdoc */
+  public async undoReveal(context: VotingSessionContext, roundId: string): Promise<VotingSession> {
+    try {
+      const result = context.handle.undoVotingRoundReveal(
+        context.getSession().id,
+        roundId,
+        this.currentUser,
+        this.now()
+      );
+      if (result !== 'reopened') {
+        const errors = {
+          'invalid-session': new VotingSessionError(
+            'invalid-session',
+            'This voting session is no longer active.'
+          ),
+          'host-required': new VotingSessionError(
+            'host-required',
+            'Only a current team host can undo a reveal.'
+          ),
+          'invalid-round': new VotingSessionError(
+            'invalid-round',
+            'Only the current revealed round can be reopened.'
+          )
+        } as const;
+        throw errors[result];
+      }
+      await context.handle.waitForSaved();
+      return context.getSession();
+    } catch (error: unknown) {
+      throw this.normalizeError(error);
+    }
+  }
+
+  /** @inheritdoc */
+  public async finalizeEstimate(
+    context: VotingSessionContext,
+    roundId: string,
+    scaleValue: string
+  ): Promise<VotingSession> {
+    try {
+      const result = context.handle.finalizeVotingRound(
+        context.getSession().id,
+        roundId,
+        scaleValue,
+        this.currentUser,
+        this.now()
+      );
+      if (result !== 'finalized' && result !== 'already-finalized') {
+        const errors = {
+          'invalid-session': new VotingSessionError(
+            'invalid-session',
+            'This voting session is no longer active.'
+          ),
+          'host-required': new VotingSessionError(
+            'host-required',
+            'Only a current team host can assign the final estimate.'
+          ),
+          'invalid-round': new VotingSessionError(
+            'invalid-round',
+            'These results are no longer available for assignment.'
+          ),
+          'invalid-estimate': new VotingSessionError(
+            'invalid-estimate',
+            'Select a value from this session scale.'
+          ),
+          'invalid-story': new VotingSessionError(
+            'invalid-round',
+            'The source story is no longer ready for assignment.'
+          )
+        } as const;
+        throw errors[result];
+      }
+      await context.handle.waitForSaved();
+      await this.repository.updateTeamMetadata(context.handle);
+      return context.getSession();
+    } catch (error: unknown) {
+      throw this.normalizeError(error);
+    }
   }
 
   /** @inheritdoc */
@@ -799,6 +923,9 @@ export class VotingSessionService implements IVotingSessionService {
           'not-found',
           'The team could not be found or is not accessible.'
         );
+      }
+      if (error.code === 'metadata-sync') {
+        return new VotingSessionError('save-failure', error.message);
       }
     }
     return new VotingSessionError(

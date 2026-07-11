@@ -20,6 +20,8 @@ import { normalizeStoryLink } from '../stories/storyManagement';
 import type { NamedParticipantRow } from './participation';
 import { selectCurrentVoteValue, selectParticipation } from './participation';
 import { VotingTimerPanel } from './VotingTimerPanel';
+import { selectVotingResults } from './results';
+import { VotingResultsPanel } from './VotingResultsPanel';
 import styles from './VotingPage.module.scss';
 
 /** Dependencies for the normal and focused Voting destination. */
@@ -55,6 +57,8 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
   const [isReplaceConfirmationOpen, setIsReplaceConfirmationOpen] = React.useState(false);
   const [copyState, setCopyState] = React.useState<CopyState>('idle');
   const [previewStoryId, setPreviewStoryId] = React.useState<string>();
+  const [selectedFinalEstimate, setSelectedFinalEstimate] = React.useState<string>();
+  const [isChangingFinalEstimate, setIsChangingFinalEstimate] = React.useState(false);
 
   React.useEffect(() => {
     let isCurrent = true;
@@ -229,6 +233,57 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
     }
   };
 
+  const revealResults = async (roundId: string): Promise<void> => {
+    if (context === undefined) {
+      return;
+    }
+    setIsVotingActionBusy(true);
+    setError(undefined);
+    try {
+      await props.service.revealResults(context, roundId);
+      setDocument(context.getDocument());
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : 'Voting results could not be revealed.');
+    } finally {
+      setIsVotingActionBusy(false);
+    }
+  };
+
+  const undoReveal = async (roundId: string): Promise<void> => {
+    if (context === undefined) {
+      return;
+    }
+    setIsVotingActionBusy(true);
+    setError(undefined);
+    try {
+      await props.service.undoReveal(context, roundId);
+      setSelectedFinalEstimate(undefined);
+      setDocument(context.getDocument());
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : 'The reveal could not be undone.');
+    } finally {
+      setIsVotingActionBusy(false);
+    }
+  };
+
+  const finalizeEstimate = async (roundId: string): Promise<void> => {
+    if (context === undefined || selectedFinalEstimate === undefined) {
+      return;
+    }
+    setIsVotingActionBusy(true);
+    setError(undefined);
+    try {
+      await props.service.finalizeEstimate(context, roundId, selectedFinalEstimate);
+      setDocument(context.getDocument());
+      setIsChangingFinalEstimate(false);
+      setSelectedFinalEstimate(undefined);
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : 'The final estimate could not be saved.');
+    } finally {
+      setIsVotingActionBusy(false);
+    }
+  };
+
   const castVote = async (roundId: string, value: string): Promise<void> => {
     if (context === undefined) {
       return;
@@ -336,16 +391,36 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
   const canReplaceStory = activeRound?.status === 'Voting' && activeRound.votes.length === 0;
   const actionsUnavailable = isVotingActionBusy || context.getConnectionState() === 'Disconnected';
   const previewedSourceStory = document.stories.find((story) => story.id === previewStoryId);
-  const isPreviewingActiveStory = activeRound?.storyId === previewStoryId;
+  const displayedRound =
+    activeRound?.storyId === previewStoryId
+      ? activeRound
+      : [...session.rounds]
+          .reverse()
+          .find(
+            (round) =>
+              round.storyId === previewStoryId &&
+              (round.status === 'Revealed' || round.status === 'Finalized')
+          );
+  const isPreviewingActiveStory = displayedRound?.storyId === previewStoryId;
+  const roundStatusLabel =
+    displayedRound?.status === 'Voting'
+      ? 'Active voting'
+      : displayedRound?.status === 'Revealed'
+        ? 'Results revealed'
+        : displayedRound?.status === 'Finalized'
+          ? 'Finalized'
+          : undefined;
   const previewedStory =
-    isPreviewingActiveStory && activeRound !== undefined
+    isPreviewingActiveStory && displayedRound !== undefined
       ? {
-          title: activeRound.storySnapshot.title,
-          description: activeRound.storySnapshot.description,
-          link: activeRound.storySnapshot.link,
-          status: `${previewedSourceStory?.status ?? 'Ready'} · Active voting`
+          title: displayedRound.storySnapshot.title,
+          description: displayedRound.storySnapshot.description,
+          link: displayedRound.storySnapshot.link,
+          status: `${previewedSourceStory?.status ?? 'Ready'}${roundStatusLabel === undefined ? '' : ` · ${roundStatusLabel}`}`
         }
       : previewedSourceStory;
+  const votingResults =
+    displayedRound === undefined ? undefined : selectVotingResults(session, displayedRound);
   const safeStoryLink =
     previewedStory?.link === undefined ? undefined : normalizeStoryLink(previewedStory.link).link;
   const canSelectPreviewedStory =
@@ -420,6 +495,8 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
                         onClick={() => {
                           setPreviewStoryId(story.id);
                           setSelectedStoryId(story.id);
+                          setSelectedFinalEstimate(undefined);
+                          setIsChangingFinalEstimate(false);
                         }}
                       >
                         <span className={styles.storyCardHeader}>
@@ -428,7 +505,9 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
                             className={`${styles.storyCardStatus} ${getStoryStatusTone(story.status, isActive)}`}
                           >
                             {story.status}
-                            {isActive ? ' · Active voting' : ''}
+                            {isActive
+                              ? ` · ${activeRound?.status === 'Voting' ? 'Active voting' : 'Results revealed'}`
+                              : ''}
                           </span>
                         </span>
                         <span className={styles.storyCardDescription}>{story.description}</span>
@@ -492,7 +571,7 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
                     {activeRound === undefined ? 'Start story voting' : 'Replace active story'}
                   </PrimaryButton>
                 </RoleGuard>
-                {isPreviewingActiveStory && activeRound !== undefined && (
+                {isPreviewingActiveStory && displayedRound?.status === 'Voting' && (
                   <div className={styles.votingDetails}>
                     <fieldset className={styles.voteFieldset} disabled={actionsUnavailable}>
                       <legend>Choose your estimate</legend>
@@ -503,9 +582,12 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
                             className={currentVote === value ? styles.selectedVote : undefined}
                             aria-pressed={currentVote === value}
                             disabled={
-                              activeRound.status !== 'Voting' || context.participantId === undefined
+                              displayedRound.status !== 'Voting' ||
+                              context.participantId === undefined
                             }
-                            onClick={() => castVote(activeRound.id, value).catch(() => undefined)}
+                            onClick={() =>
+                              castVote(displayedRound.id, value).catch(() => undefined)
+                            }
                           >
                             {value}
                           </DefaultButton>
@@ -522,7 +604,41 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
                         ? 'No vote selected yet.'
                         : `Your current vote is ${currentVote}. You can change it until reveal.`}
                     </p>
+                    <RoleGuard allowed={context.isHost && displayedRound.votes.length > 0}>
+                      <PrimaryButton
+                        disabled={actionsUnavailable}
+                        onClick={() => revealResults(displayedRound.id).catch(() => undefined)}
+                      >
+                        Reveal Results
+                      </PrimaryButton>
+                    </RoleGuard>
                   </div>
+                )}
+                {votingResults !== undefined && displayedRound !== undefined && (
+                  <VotingResultsPanel
+                    results={votingResults}
+                    scaleValues={session.settings.scaleValues}
+                    isHost={context.isHost}
+                    disabled={actionsUnavailable}
+                    selectedEstimate={selectedFinalEstimate}
+                    assignedValue={displayedRound.assignedValue}
+                    isChangingEstimate={isChangingFinalEstimate}
+                    serviceScope={props.serviceScope}
+                    webAbsoluteUrl={props.webAbsoluteUrl}
+                    onSelectEstimate={setSelectedFinalEstimate}
+                    onAssignEstimate={() =>
+                      finalizeEstimate(displayedRound.id).catch(() => undefined)
+                    }
+                    onUndoReveal={() => undoReveal(displayedRound.id).catch(() => undefined)}
+                    onStartChangingEstimate={() => {
+                      setSelectedFinalEstimate(undefined);
+                      setIsChangingFinalEstimate(true);
+                    }}
+                    onCancelChangingEstimate={() => {
+                      setSelectedFinalEstimate(undefined);
+                      setIsChangingFinalEstimate(false);
+                    }}
+                  />
                 )}
               </section>
             )}
@@ -536,27 +652,30 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
                 </PrimaryButton>
               </RoleGuard>
             )}
-            {session.status === 'Active' && activeRound === undefined && !context.isHost && (
-              <p role="status">Waiting for the host to select a story.</p>
-            )}
+            {session.status === 'Active' &&
+              activeRound === undefined &&
+              displayedRound === undefined &&
+              !context.isHost && <p role="status">Waiting for the host to select a story.</p>}
           </main>
           <aside className={styles.sessionColumn}>
             {session.settings.timerEnabled && activeRound !== undefined && (
               <VotingTimerPanel
                 timer={activeRound.timer}
-                isHost={context.isHost}
+                isHost={context.isHost && activeRound.status === 'Voting'}
                 disabled={actionsUnavailable}
                 onStart={() => runTimerAction('startTimer', activeRound.id).catch(() => undefined)}
                 onStop={() => runTimerAction('stopTimer', activeRound.id).catch(() => undefined)}
                 onReset={() => runTimerAction('resetTimer', activeRound.id).catch(() => undefined)}
               />
             )}
-            {session.settings.timerEnabled && activeRound === undefined && (
-              <section className={styles.timerPanel} aria-labelledby="voting-timer-heading">
-                <h3 id="voting-timer-heading">Timer</h3>
-                <p>Ready when a story becomes active.</p>
-              </section>
-            )}
+            {session.settings.timerEnabled &&
+              activeRound === undefined &&
+              displayedRound === undefined && (
+                <section className={styles.timerPanel} aria-labelledby="voting-timer-heading">
+                  <h3 id="voting-timer-heading">Timer</h3>
+                  <p>Ready when a story becomes active.</p>
+                </section>
+              )}
             <section
               className={styles.participation}
               aria-labelledby="session-participation-heading"

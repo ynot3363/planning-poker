@@ -13,6 +13,7 @@ import { fixtureDocument, fixtureUser } from '../domain/planningPokerFixtures';
 import type {
   PlanningPokerDocumentRoot,
   PointingStory,
+  StoryVotingRound,
   VotingSession
 } from '../domain/planningPokerDomain';
 import type { HostedTeamSummary, TeamDocumentHandle } from '../repository/teamRepository';
@@ -66,6 +67,9 @@ function createService(
     selectVotingStory: jest.fn(() => 'selected'),
     castVotingVote: jest.fn(() => 'cast'),
     updateVotingTimer: jest.fn(() => 'updated'),
+    revealVotingRound: jest.fn(() => 'revealed'),
+    undoVotingRoundReveal: jest.fn(() => 'reopened'),
+    finalizeVotingRound: jest.fn(() => 'finalized'),
     setVotingParticipantConnection: jest.fn(),
     waitForSaved: jest.fn(async () => undefined),
     subscribe: jest.fn(() => jest.fn()),
@@ -178,6 +182,115 @@ function createService(
     startTimer: jest.fn(async (_context, _roundId) => document.sessions[0]),
     stopTimer: jest.fn(async (_context, _roundId) => document.sessions[0]),
     resetTimer: jest.fn(async (_context, _roundId) => document.sessions[0]),
+    revealResults: jest.fn(async (_context, roundId) => {
+      const active = document.sessions[0];
+      document = {
+        ...document,
+        sessions: [
+          {
+            ...active,
+            rounds: active.rounds.map((round) =>
+              round.id === roundId
+                ? {
+                    ...round,
+                    status: 'Revealed',
+                    revealedAt: '2026-07-11T12:31:00.000Z',
+                    revealedBy: fixtureUser,
+                    revealReason: 'Manual',
+                    revealedVotedCount: round.votes.length,
+                    revealedMissingCount: Math.max(
+                      0,
+                      active.participants.filter(
+                        (participant) => participant.presence.connection === 'Connected'
+                      ).length - round.votes.length
+                    ),
+                    timer: {
+                      configuredDurationSeconds: round.timer.configuredDurationSeconds,
+                      status: 'Stopped',
+                      remainingSeconds: round.timer.remainingSeconds,
+                      stoppedAt: '2026-07-11T12:31:00.000Z'
+                    }
+                  }
+                : round
+            )
+          }
+        ]
+      };
+      return document.sessions[0];
+    }),
+    undoReveal: jest.fn(async (_context, roundId) => {
+      const active = document.sessions[0];
+      document = {
+        ...document,
+        sessions: [
+          {
+            ...active,
+            rounds: active.rounds.map((round) =>
+              round.id === roundId
+                ? {
+                    ...round,
+                    status: 'Voting',
+                    revealedAt: undefined,
+                    revealedBy: undefined,
+                    revealReason: undefined,
+                    revealedVotedCount: undefined,
+                    revealedMissingCount: undefined
+                  }
+                : round
+            )
+          }
+        ]
+      };
+      return document.sessions[0];
+    }),
+    finalizeEstimate: jest.fn(async (_context, roundId, value) => {
+      const active = document.sessions[0];
+      const round = active.rounds.find((candidate) => candidate.id === roundId) as StoryVotingRound;
+      const isRevision = round.status === 'Finalized';
+      document = {
+        ...document,
+        stories: document.stories.map((story) =>
+          story.id === round.storyId
+            ? {
+                ...story,
+                status: 'Pointed',
+                currentEstimate: value,
+                estimateHistory: [
+                  ...story.estimateHistory,
+                  {
+                    sessionId: active.id,
+                    roundId,
+                    value,
+                    finalizedAt: '2026-07-11T12:32:00.000Z',
+                    finalizedBy: fixtureUser
+                  }
+                ]
+              }
+            : story
+        ),
+        sessions: [
+          {
+            ...active,
+            activeRoundId: undefined,
+            finalizedRoundIds: isRevision
+              ? active.finalizedRoundIds
+              : [...active.finalizedRoundIds, roundId],
+            rounds: active.rounds.map((candidate) =>
+              candidate.id === roundId
+                ? {
+                    ...candidate,
+                    status: 'Finalized',
+                    assignedValue: value,
+                    finalizedAt: '2026-07-11T12:32:00.000Z',
+                    finalizedBy: fixtureUser
+                  }
+                : candidate
+            )
+          }
+        ]
+      };
+      return document.sessions[0];
+    }),
     subscribe: jest.fn((_context: VotingSessionContext, _listener: () => void) => jest.fn()),
     markDisconnected: jest.fn(),
     closeSession: jest.fn((_context: VotingSessionContext) => undefined)
@@ -592,6 +705,140 @@ describe('VotingPage', () => {
 
     expect(service.selectStory).toHaveBeenCalledWith(expect.anything(), readyStory.id);
     expect(container.textContent).toContain(readyStory.title);
+  });
+
+  it('lets the host reveal early and directly save a scale-valid final estimate', async () => {
+    const story: PointingStory = {
+      id: 'results-story',
+      title: 'Reveal this story',
+      description: 'Review the spread before assigning points.',
+      status: 'Ready',
+      estimateHistory: [],
+      createdAt: fixtureDocument.createdAt,
+      createdBy: fixtureUser,
+      updatedAt: fixtureDocument.updatedAt,
+      updatedBy: fixtureUser
+    };
+    const resultsSession: VotingSession = {
+      ...session,
+      status: 'Active',
+      participants: [
+        {
+          kind: 'Named',
+          id: 'participant-current',
+          user: fixtureUser,
+          joinedAt: fixtureDocument.createdAt,
+          presence: { connection: 'Connected', lastSeenAt: fixtureDocument.updatedAt }
+        },
+        {
+          kind: 'Named',
+          id: 'participant-missing',
+          user: {
+            ...fixtureUser,
+            objectId: 'missing-user',
+            displayName: 'Missing User',
+            loginName: 'missing@example.com'
+          },
+          joinedAt: fixtureDocument.createdAt,
+          presence: { connection: 'Connected', lastSeenAt: fixtureDocument.updatedAt }
+        }
+      ],
+      rounds: [
+        {
+          id: 'results-round',
+          storyId: story.id,
+          storySnapshot: {
+            storyId: story.id,
+            title: story.title,
+            description: story.description
+          },
+          status: 'Voting',
+          votes: [
+            {
+              participantId: 'participant-current',
+              value: '3',
+              castAt: fixtureDocument.updatedAt
+            }
+          ],
+          timer: {
+            configuredDurationSeconds: 300,
+            status: 'Running',
+            remainingSeconds: 300,
+            startedAt: fixtureDocument.updatedAt
+          }
+        }
+      ],
+      activeRoundId: 'results-round'
+    };
+    const service = createService(true, resultsSession, 'participant-current', [story]);
+    await act(async () => {
+      renderVoting(
+        <VotingPage
+          service={service}
+          serviceScope={serviceScope}
+          teamId={team.teamId}
+          sessionId={session.id}
+          onOpenSession={jest.fn()}
+        />,
+        container
+      );
+    });
+    const reveal = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Reveal Results'
+    );
+
+    await act(async () => reveal?.click());
+
+    expect(service.revealResults).toHaveBeenCalledWith(expect.anything(), 'results-round');
+    expect(container.textContent).toContain('Manual reveal · 1 voted · 1 missing');
+    expect(container.textContent).toContain('Named participant results');
+    expect(container.textContent).toContain('Missing User');
+    const undoRevealButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Undo reveal'
+    );
+
+    await act(async () => undoRevealButton?.click());
+
+    expect(service.undoReveal).toHaveBeenCalledWith(expect.anything(), 'results-round');
+    expect(container.textContent).not.toContain('Named participant results');
+    const revealAgain = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Reveal Results'
+    );
+    await act(async () => revealAgain?.click());
+    const estimate = container.querySelector(
+      '[aria-label="Select 5 as final estimate"]'
+    ) as HTMLButtonElement;
+    expect(estimate).not.toBeNull();
+    act(() => estimate?.click());
+    const assign = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Assign points'
+    );
+    expect(assign?.disabled).toBe(false);
+    await act(async () => assign?.click());
+
+    expect(service.finalizeEstimate).toHaveBeenCalledWith(expect.anything(), 'results-round', '5');
+    expect(container.textContent).toContain('Final estimate: 5');
+    expect(container.querySelector('[aria-label="Select 3 as final estimate"]')).toBeNull();
+    const changePoints = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Change points'
+    );
+    act(() => changePoints?.click());
+    const revisedEstimate = container.querySelector(
+      '[aria-label="Select 3 as final estimate"]'
+    ) as HTMLButtonElement;
+    act(() => revisedEstimate.click());
+    const savePoints = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Save points'
+    );
+    await act(async () => savePoints?.click());
+
+    expect(service.finalizeEstimate).toHaveBeenLastCalledWith(
+      expect.anything(),
+      'results-round',
+      '3'
+    );
+    expect(container.textContent).toContain('Final estimate: 3');
+    expect(await axe(container)).toHaveNoViolations();
   });
 
   it('shows synchronized timer controls only to the host', async () => {
