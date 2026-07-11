@@ -12,6 +12,7 @@ import {
 import type {
   PlanningPokerDocumentRoot,
   PlanningPokerTeam,
+  PointingStory,
   UserReference
 } from '../domain/planningPokerDomain';
 import { PlanningPokerDocumentRootSchema } from '../domain/planningPokerSchema';
@@ -69,6 +70,7 @@ interface ITreeRootView {
 
 interface IMutableDocumentRoot {
   team: PlanningPokerTeam;
+  stories: readonly PointingStory[];
   updatedAt: string;
 }
 
@@ -293,6 +295,13 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
           const document = root as unknown as IMutableDocumentRoot;
           document.team = team;
           document.updatedAt = team.updatedAt;
+        });
+      },
+      updateStories: (stories, updatedAt) => {
+        Tree.runTransaction(view, (root) => {
+          const document = root as unknown as IMutableDocumentRoot;
+          document.stories = stories;
+          document.updatedAt = updatedAt;
         });
       },
       waitForSaved: () => this.waitForSaved(container),

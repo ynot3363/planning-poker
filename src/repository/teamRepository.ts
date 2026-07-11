@@ -1,6 +1,7 @@
 import type {
   PlanningPokerDocumentRoot,
   PlanningPokerTeam,
+  PointingStory,
   UserReference
 } from '../domain/planningPokerDomain';
 import type { IPlanningPokerStorageConfiguration } from '../storage/storageTypes';
@@ -67,6 +68,14 @@ export interface TeamDocumentHandle {
    * @returns `void` after the local transaction is applied.
    */
   updateTeam(team: PlanningPokerTeam): void;
+  /**
+   * Replaces the ordered story collection through the store's Fluid transaction boundary.
+   *
+   * @param stories - Complete next story collection.
+   * @param updatedAt - ISO timestamp for document Last Activity.
+   * @returns `void` after the local transaction is applied.
+   */
+  updateStories(stories: readonly PointingStory[], updatedAt: string): void;
   /** @returns A promise that resolves only after Fluid acknowledges the pending mutation. */
   waitForSaved(): Promise<void>;
   /**

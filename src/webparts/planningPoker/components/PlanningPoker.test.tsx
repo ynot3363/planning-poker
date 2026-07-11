@@ -135,6 +135,48 @@ describe('PlanningPoker', () => {
     expect(container.querySelector('nav[aria-label="Planning Poker"]')).not.toBeNull();
   });
 
+  it('restores the last selected Stories team when switching application views', () => {
+    let currentSearch = 'planningPokerView=Stories&planningPokerTeam=team-1';
+    act(() => {
+      renderPlanningPoker(
+        <PlanningPoker
+          storageConfiguration={configuration}
+          storageService={{
+            canProvision: async () => false,
+            provision: async () => configuration
+          }}
+          onStorageConfigured={jest.fn()}
+          isPageEditMode={false}
+          currentUser={currentUser}
+          serviceScope={serviceScope}
+          routeAdapter={{
+            getSearch: () => currentSearch,
+            replaceSearch: (search) => {
+              currentSearch = search;
+            }
+          }}
+        />,
+        container
+      );
+    });
+
+    act(() => {
+      Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent?.includes('About'))
+        ?.click();
+    });
+    expect(currentSearch).toContain('planningPokerView=About');
+    expect(currentSearch).not.toContain('planningPokerTeam');
+
+    act(() => {
+      Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent?.includes('Stories'))
+        ?.click();
+    });
+    expect(currentSearch).toContain('planningPokerView=Stories');
+    expect(currentSearch).toContain('planningPokerTeam=team-1');
+  });
+
   it('enables explicit provisioning after the component permission check', async () => {
     const onStorageConfigured = jest.fn();
     await act(async () => {

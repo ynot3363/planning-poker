@@ -26,6 +26,9 @@ function createHandle(): TeamDocumentHandle {
     updateTeam: (team) => {
       snapshot = { ...snapshot, team, updatedAt: team.updatedAt };
     },
+    updateStories: (stories, updatedAt) => {
+      snapshot = { ...snapshot, stories, updatedAt };
+    },
     waitForSaved: async () => undefined,
     subscribe: () => jest.fn(),
     dispose: jest.fn()

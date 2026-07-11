@@ -70,7 +70,9 @@ export function readPlanningPokerRoute(search: string): IPlanningPokerRouteResul
     (requestedSessionId !== null && sessionId === undefined)
   ) {
     notice = 'invalid-identifier';
-  } else if ((teamId === undefined) !== (sessionId === undefined)) {
+  } else if (sessionId !== undefined && teamId === undefined) {
+    notice = 'incomplete-voting-link';
+  } else if (requestedView === 'Voting' && (teamId === undefined) !== (sessionId === undefined)) {
     notice = 'incomplete-voting-link';
   }
   return {

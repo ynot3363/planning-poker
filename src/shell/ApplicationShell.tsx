@@ -17,6 +17,8 @@ import { TeamsPage } from '../teams/TeamsPage';
 import type { UserReference } from '../domain/planningPokerDomain';
 import type { ITeamManagementService } from '../teams/teamManagementService';
 import type { IPlanningPokerPeopleService } from '../teams/sharePointPeopleService';
+import { StoriesPage } from '../stories/StoriesPage';
+import type { IStoryManagementService } from '../stories/storyManagement';
 import styles from './ApplicationShell.module.scss';
 
 initializeIcons();
@@ -55,6 +57,8 @@ export interface IApplicationShellProps {
     readonly service: ITeamManagementService;
     /** SharePoint people resolver used by team forms. */
     readonly peopleService: IPlanningPokerPeopleService;
+    /** Hosted story-catalog workflow service. */
+    readonly storyService: IStoryManagementService;
   };
   /** Safe initialization error when authenticated team services are unavailable. */
   readonly teamManagementError?: string;
@@ -117,9 +121,9 @@ function AboutView(): React.ReactElement {
       <ContentCard label="Stories and sessions">
         <h2>Stories and sessions</h2>
         <p>
-          Hosts create or import stories, organize their lifecycle, and start one shareable voting
-          session for a team. Authenticated site users join through the session link without leaving
-          the SharePoint or Teams context.
+          Hosts create or import stories and organize them as Ready, Pointed, or Archived. Restoring
+          an archived story or returning a pointed story to Ready keeps its estimate history. Only
+          Ready stories can enter a new voting round.
         </p>
       </ContentCard>
       <ContentCard label="Named and anonymous voting">
@@ -197,10 +201,27 @@ function ShellView(
     );
   }
   if (props.route.view === 'Stories') {
+    if (props.teamManagement !== undefined) {
+      return (
+        <StoriesPage
+          currentUser={props.teamManagement.currentUser}
+          service={props.teamManagement.storyService}
+          selectedTeamId={props.route.teamId}
+          panelLayerHostId={props.panelLayerHostId}
+          onSelectTeam={(teamId) =>
+            props.onNavigate({ view: 'Stories', teamId, focusedVoting: false })
+          }
+          onNavigateTeams={() => props.onNavigate({ view: 'Teams', focusedVoting: false })}
+        />
+      );
+    }
     return (
-      <FeaturePlaceholder
-        title="No story selected"
-        description="Choose a team before managing its ready, pointed, and archived stories."
+      <StatusState
+        kind="error"
+        title="Stories could not be initialized"
+        description={
+          props.teamManagementError ?? 'Verify the collaboration connection and reload the page.'
+        }
       />
     );
   }

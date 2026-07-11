@@ -22,6 +22,8 @@ import type { IPlanningPokerDriveService } from '../../repository/graphDriveServ
 import { SharePointPeopleService } from '../../teams/sharePointPeopleService';
 import { TeamManagementService } from '../../teams/teamManagementService';
 import type { ITeamManagementService } from '../../teams/teamManagementService';
+import { StoryManagementService } from '../../stories/storyManagement';
+import type { IStoryManagementService } from '../../stories/storyManagement';
 
 import * as strings from 'PlanningPokerWebPartStrings';
 import PlanningPoker from './components/PlanningPoker';
@@ -45,6 +47,7 @@ export default class PlanningPokerWebPart extends BaseClientSideWebPart<IPlannin
     readonly currentUser: UserReference;
     readonly service: ITeamManagementService;
     readonly peopleService: SharePointPeopleService;
+    readonly storyService: IStoryManagementService;
   };
   private _teamManagementError?: string;
 
@@ -180,6 +183,12 @@ export default class PlanningPokerWebPart extends BaseClientSideWebPart<IPlannin
         currentUser,
         peopleService,
         service: new TeamManagementService(
+          repository,
+          currentUser,
+          () => crypto.randomUUID(),
+          () => new Date().toISOString()
+        ),
+        storyService: new StoryManagementService(
           repository,
           currentUser,
           () => crypto.randomUUID(),

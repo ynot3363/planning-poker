@@ -99,6 +99,7 @@ implementation story catalog.
 - [Architecture](docs/architecture.md)
 - [Application shell and deep links](docs/application-shell.md)
 - [Team management](docs/team-management.md)
+- [Story management](docs/story-management.md)
 - [Coding standards](docs/coding-standards.md)
 - [User story standards](docs/USER_STORY_STANDARDS.md)
 - [Commit standards](docs/COMMIT_STANDARDS.md)

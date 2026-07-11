@@ -31,6 +31,9 @@ function createHandle(document: PlanningPokerDocumentRoot = fixtureDocument): Te
     updateTeam: jest.fn((team: PlanningPokerTeam) => {
       snapshot = { ...snapshot, team, updatedAt: team.updatedAt };
     }),
+    updateStories: jest.fn((stories, updatedAt) => {
+      snapshot = { ...snapshot, stories, updatedAt };
+    }),
     waitForSaved: jest.fn(async () => undefined),
     subscribe: jest.fn(() => jest.fn()),
     dispose: jest.fn()

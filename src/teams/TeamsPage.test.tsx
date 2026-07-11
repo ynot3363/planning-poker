@@ -27,6 +27,7 @@ function createHandle(): TeamDocumentHandle {
     driveItemId: 'item-id',
     getSnapshot: () => fixtureDocument,
     updateTeam: jest.fn(),
+    updateStories: jest.fn(),
     waitForSaved: async () => undefined,
     subscribe: () => jest.fn(),
     dispose: jest.fn()
