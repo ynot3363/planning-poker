@@ -18,7 +18,9 @@ export type TeamRepositoryErrorCode =
   | 'host-mismatch'
   | 'disconnected'
   | 'save-timeout'
-  | 'metadata-sync';
+  | 'metadata-sync'
+  | 'open-session'
+  | 'recycle-failure';
 
 /** Represents an expected repository failure without exposing transport details. */
 export class TeamRepositoryError extends Error {
@@ -101,6 +103,13 @@ export interface ITeamDocumentStore {
    * @returns A promise that resolves when the rename is acknowledged.
    */
   rename(teamId: string, title: string): Promise<void>;
+  /**
+   * Moves one Fluid file to the SharePoint recycle bin.
+   *
+   * @param driveItemId - Immutable ODSP drive item identifier.
+   * @returns The optional recycle-bin identifier supplied by the backing API.
+   */
+  recycle(driveItemId: string): Promise<{ readonly recycleBinItemId?: string }>;
   /**
    * Refreshes the SharePoint discovery index from an authoritative Fluid snapshot.
    *
@@ -284,6 +293,57 @@ export class TeamRepository {
       await this.store.rename(team.id, team.title.trim());
     }
     await this.updateTeamMetadata(handle);
+  }
+
+  /**
+   * Loads authoritative Fluid state, verifies the current host and session guard, then recycles it.
+   *
+   * @param teamId - Stable team identifier selected for deletion.
+   * @param currentUser - Delegated user requesting deletion.
+   * @returns The optional recycle-bin identifier supplied by SharePoint.
+   * @throws Throws `TeamRepositoryError` when the team cannot be safely recycled.
+   */
+  public async deleteTeam(
+    teamId: string,
+    currentUser: UserReference
+  ): Promise<{ readonly recycleBinItemId?: string }> {
+    this.requireStorage();
+    const summary = (await this.store.list()).find((team) => team.teamId === teamId);
+    if (summary === undefined) {
+      throw new TeamRepositoryError('not-found', 'The team file could not be found.');
+    }
+    const handle = await this.store.load(summary.driveItemId);
+    try {
+      const document = handle.getSnapshot();
+      if (document.team.id !== teamId || handle.teamId !== teamId) {
+        throw new TeamRepositoryError('invalid-team', 'The loaded team identity does not match.');
+      }
+      if (!isHostedBy(document.team, currentUser)) {
+        throw new TeamRepositoryError(
+          'host-mismatch',
+          'Team host details changed. Reload the team or ask another host to repair access.'
+        );
+      }
+      if (document.openSessionId !== undefined && document.openSessionId.trim().length > 0) {
+        throw new TeamRepositoryError(
+          'open-session',
+          "End the team's open voting session before deleting it."
+        );
+      }
+      try {
+        return await this.store.recycle(handle.driveItemId);
+      } catch (error: unknown) {
+        if (error instanceof TeamRepositoryError) {
+          throw error;
+        }
+        throw new TeamRepositoryError(
+          'recycle-failure',
+          'The team could not be moved to the SharePoint recycle bin.'
+        );
+      }
+    } finally {
+      handle.dispose();
+    }
   }
 
   /**

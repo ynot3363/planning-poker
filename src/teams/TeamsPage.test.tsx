@@ -8,6 +8,8 @@ import type { HostedTeamSummary, TeamDocumentHandle } from '../repository/teamRe
 import type { TeamFormValues } from './teamForm';
 import type {
   ITeamManagementService,
+  TeamDeleteRequest,
+  TeamDeleteResult,
   TeamEditSession,
   TeamSaveResult
 } from './teamManagementService';
@@ -67,6 +69,15 @@ function createService(
         _values: TeamFormValues,
         _existingTeams: readonly HostedTeamSummary[]
       ): Promise<TeamSaveResult> => ({ isSaved: true })
+    ),
+    setTeamActive: jest.fn(
+      async (_team: HostedTeamSummary, _isActive: boolean): Promise<TeamSaveResult> => ({
+        isSaved: true
+      })
+    ),
+    deleteTeam: jest.fn(
+      async (request: TeamDeleteRequest): Promise<TeamDeleteResult> =>
+        request.isConfirmed ? { code: 'success' } : { code: 'confirmation-cancelled' }
     ),
     closeTeam: jest.fn()
   };
@@ -235,5 +246,194 @@ describe('TeamsPage', () => {
 
     expect(capturedValues?.title).toBe('Delivery Team');
     expect(service.listTeams).toHaveBeenCalledTimes(2);
+  });
+
+  it('activates and deactivates a hosted team without recycling it', async () => {
+    const summary: HostedTeamSummary = {
+      teamId: fixtureDocument.team.id,
+      driveItemId: 'item-id',
+      title: fixtureDocument.team.title,
+      isActive: true
+    };
+    const service = createService([summary]);
+    await act(async () => {
+      renderPage(
+        <TeamsPage currentUser={fixtureUser} service={service} peopleService={peopleService} />,
+        container
+      );
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent?.includes('Deactivate'))
+        ?.click();
+      await Promise.resolve();
+    });
+
+    expect(service.setTeamActive).toHaveBeenCalledWith(summary, false);
+    expect(service.deleteTeam).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('Inactive');
+    expect(container.textContent).toContain('Activate');
+  });
+
+  it('names the team in the delete confirmation and cancels without deletion', async () => {
+    const summary: HostedTeamSummary = {
+      teamId: fixtureDocument.team.id,
+      driveItemId: 'item-id',
+      title: 'Delivery Team',
+      isActive: true
+    };
+    const service = createService([summary]);
+    await act(async () => {
+      renderPage(
+        <TeamsPage currentUser={fixtureUser} service={service} peopleService={peopleService} />,
+        container
+      );
+      await Promise.resolve();
+    });
+    const deleteButton = Array.from(container.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Delete')
+    );
+    await act(async () => {
+      deleteButton?.click();
+      await Promise.resolve();
+    });
+
+    expect(document.body.textContent).toContain('Delete Delivery Team?');
+    expect(document.body.textContent).toContain('Stories, votes, and session history');
+    expect(await axe(document.body)).toHaveNoViolations();
+
+    await act(async () => {
+      Array.from(document.body.querySelectorAll('button'))
+        .find((button) => button.textContent?.trim() === 'Cancel')
+        ?.click();
+      await Promise.resolve();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(service.deleteTeam).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('Delivery Team');
+    expect(document.body.textContent).not.toContain('Delete Delivery Team?');
+    expect(document.activeElement).toBe(deleteButton);
+  });
+
+  it('removes a successfully deleted team and moves focus to New team', async () => {
+    const summary: HostedTeamSummary = {
+      teamId: fixtureDocument.team.id,
+      driveItemId: 'item-id',
+      title: 'Delivery Team',
+      isActive: true
+    };
+    const service = createService([summary]);
+    await act(async () => {
+      renderPage(
+        <TeamsPage currentUser={fixtureUser} service={service} peopleService={peopleService} />,
+        container
+      );
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent?.includes('Delete'))
+        ?.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Array.from(document.body.querySelectorAll('button'))
+        .find((button) => button.textContent?.trim() === 'Delete team')
+        ?.click();
+      await Promise.resolve();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+    });
+
+    expect(service.deleteTeam).toHaveBeenCalledWith({ team: summary, isConfirmed: true });
+    expect(container.textContent).not.toContain('Delivery Team');
+    expect(container.textContent).toContain('Create your first team');
+    expect(document.activeElement?.textContent).toContain('New team');
+  });
+
+  it('retains the team and offers retry when recycling fails', async () => {
+    const summary: HostedTeamSummary = {
+      teamId: fixtureDocument.team.id,
+      driveItemId: 'item-id',
+      title: 'Delivery Team',
+      isActive: true
+    };
+    const service = createService([summary]);
+    service.deleteTeam
+      .mockResolvedValueOnce({
+        code: 'recycle-failure',
+        message: 'The team could not be moved to the SharePoint recycle bin. Try again.'
+      })
+      .mockResolvedValueOnce({ code: 'success' });
+    await act(async () => {
+      renderPage(
+        <TeamsPage currentUser={fixtureUser} service={service} peopleService={peopleService} />,
+        container
+      );
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent?.includes('Delete'))
+        ?.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Array.from(document.body.querySelectorAll('button'))
+        .find((button) => button.textContent?.trim() === 'Delete team')
+        ?.click();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('Delivery Team');
+    expect(document.body.textContent).toContain('Try again');
+
+    await act(async () => {
+      Array.from(document.body.querySelectorAll('button'))
+        .find((button) => button.textContent?.trim() === 'Delete team')
+        ?.click();
+      await Promise.resolve();
+    });
+    expect(service.deleteTeam).toHaveBeenCalledTimes(2);
+    expect(container.textContent).not.toContain('Delivery Team');
+  });
+
+  it('keeps the team and explains that an open session blocks deletion', async () => {
+    const summary: HostedTeamSummary = {
+      teamId: fixtureDocument.team.id,
+      driveItemId: 'item-id',
+      title: 'Delivery Team',
+      isActive: true
+    };
+    const service = createService([summary]);
+    service.deleteTeam.mockResolvedValue({
+      code: 'open-session',
+      message: "End the team's open voting session before deleting it."
+    });
+    await act(async () => {
+      renderPage(
+        <TeamsPage currentUser={fixtureUser} service={service} peopleService={peopleService} />,
+        container
+      );
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent?.includes('Delete'))
+        ?.click();
+      await Promise.resolve();
+    });
+    await act(async () => {
+      Array.from(document.body.querySelectorAll('button'))
+        .find((button) => button.textContent?.trim() === 'Delete team')
+        ?.click();
+      await Promise.resolve();
+    });
+
+    expect(document.body.textContent).toContain('open voting session');
+    expect(document.body.textContent).toContain('Delete Delivery Team?');
+    expect(container.textContent).toContain('Delivery Team');
   });
 });

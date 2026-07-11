@@ -8,6 +8,12 @@ export interface IGraphDriveItem {
   readonly sharepointIds?: { readonly listItemId?: unknown };
 }
 
+/** Result of moving a drive item into the SharePoint recycle bin. */
+export interface IRecycleDriveItemResult {
+  /** Recycle-bin identifier when the backing API supplies one. */
+  readonly recycleBinItemId?: string;
+}
+
 /** Defines the Microsoft Graph drive mutations used by Planning Poker. */
 export interface IPlanningPokerDriveService {
   /**
@@ -49,6 +55,14 @@ export interface IPlanningPokerDriveService {
    * @returns A promise that resolves when Graph acknowledges the rename.
    */
   rename(driveId: string, driveItemId: string, fileName: string): Promise<void>;
+  /**
+   * Moves one drive item to the SharePoint recycle bin.
+   *
+   * @param driveId - Configured SharePoint document-library drive ID.
+   * @param driveItemId - ODSP drive item ID.
+   * @returns The optional recycle-bin identifier supplied by the backing API.
+   */
+  recycle(driveId: string, driveItemId: string): Promise<IRecycleDriveItemResult>;
 }
 
 /** Uses SPFx's authenticated Microsoft Graph v3 client for drive discovery and mutations. */
@@ -116,6 +130,18 @@ export class GraphDriveService implements IPlanningPokerDriveService {
   /** @inheritdoc */
   public async rename(driveId: string, driveItemId: string, fileName: string): Promise<void> {
     await this.request(driveId, driveItemId).patch({ name: fileName });
+  }
+
+  /** @inheritdoc */
+  public async recycle(driveId: string, driveItemId: string): Promise<IRecycleDriveItemResult> {
+    const response = (await this.request(driveId, driveItemId).delete()) as unknown;
+    if (typeof response === 'object' && response !== null && 'id' in response) {
+      const id = (response as { readonly id?: unknown }).id;
+      if (typeof id === 'string' && id.trim().length > 0) {
+        return { recycleBinItemId: id.trim() };
+      }
+    }
+    return {};
   }
 
   /**

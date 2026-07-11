@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { DefaultButton, PrimaryButton } from '@fluentui/react/lib/Button';
+import { Dialog, DialogFooter, DialogType } from '@fluentui/react/lib/Dialog';
 import { MessageBar, MessageBarType } from '@fluentui/react/lib/MessageBar';
 import type { UserReference } from '../domain/planningPokerDomain';
 import type { HostedTeamSummary } from '../repository/teamRepository';
@@ -45,6 +46,11 @@ export function TeamsPage(props: ITeamsPageProps): React.ReactElement {
   );
   const [editSession, setEditSession] = React.useState<TeamEditSession>();
   const [editorMessage, setEditorMessage] = React.useState<string>();
+  const [deleteTarget, setDeleteTarget] = React.useState<HostedTeamSummary>();
+  const [deleteMessage, setDeleteMessage] = React.useState<string>();
+  const [busyTeamId, setBusyTeamId] = React.useState<string>();
+  const newTeamButtonRef = React.useRef<HTMLButtonElement>(null);
+  const deleteTriggerRef = React.useRef<HTMLButtonElement>();
 
   React.useEffect(() => {
     let isCurrent = true;
@@ -122,6 +128,52 @@ export function TeamsPage(props: ITeamsPageProps): React.ReactElement {
     return result;
   };
 
+  const handleActiveState = async (team: HostedTeamSummary): Promise<void> => {
+    setEditorMessage(undefined);
+    setBusyTeamId(team.teamId);
+    const result = await props.service.setTeamActive(team, !team.isActive);
+    if (result.isSaved) {
+      setTeams((current) =>
+        current.map((candidate) =>
+          candidate.teamId === team.teamId ? { ...candidate, isActive: !team.isActive } : candidate
+        )
+      );
+    } else {
+      setEditorMessage(result.message ?? 'The team activity could not be changed. Try again.');
+    }
+    setBusyTeamId(undefined);
+  };
+
+  const openDeleteConfirmation = (team: HostedTeamSummary, trigger: HTMLButtonElement): void => {
+    deleteTriggerRef.current = trigger;
+    setDeleteMessage(undefined);
+    setDeleteTarget(team);
+  };
+
+  const cancelDelete = (): void => {
+    setDeleteMessage(undefined);
+    setDeleteTarget(undefined);
+    window.setTimeout(() => deleteTriggerRef.current?.focus(), 0);
+  };
+
+  const confirmDelete = async (): Promise<void> => {
+    if (deleteTarget === undefined) {
+      return;
+    }
+    setBusyTeamId(deleteTarget.teamId);
+    setDeleteMessage(undefined);
+    const result = await props.service.deleteTeam({ team: deleteTarget, isConfirmed: true });
+    if (result.code === 'success') {
+      const deletedTeamId = deleteTarget.teamId;
+      setTeams((current) => current.filter((team) => team.teamId !== deletedTeamId));
+      setDeleteTarget(undefined);
+      window.setTimeout(() => newTeamButtonRef.current?.focus(), 0);
+    } else if (result.code !== 'confirmation-cancelled') {
+      setDeleteMessage(result.message);
+    }
+    setBusyTeamId(undefined);
+  };
+
   if (loadState === 'loading') {
     return (
       <StatusState kind="loading" title="Loading teams" description="Checking hosted teams." />
@@ -140,7 +192,11 @@ export function TeamsPage(props: ITeamsPageProps): React.ReactElement {
   return (
     <section aria-label="Hosted teams">
       <div className={styles.commandRow}>
-        <PrimaryButton iconProps={{ iconName: 'Add' }} onClick={handleNewTeam}>
+        <PrimaryButton
+          elementRef={newTeamButtonRef}
+          iconProps={{ iconName: 'Add' }}
+          onClick={handleNewTeam}
+        >
           New team
         </PrimaryButton>
       </div>
@@ -175,12 +231,32 @@ export function TeamsPage(props: ITeamsPageProps): React.ReactElement {
                       ? 'Available for team planning and new voting sessions.'
                       : 'Still manageable, but unavailable for new voting sessions.'}
                   </p>
-                  <DefaultButton
-                    className={styles.cardAction}
-                    onClick={async () => handleEditTeam(team)}
-                  >
-                    Edit team
-                  </DefaultButton>
+                  <div className={styles.cardActions}>
+                    <DefaultButton
+                      disabled={busyTeamId === team.teamId}
+                      onClick={async () => handleEditTeam(team)}
+                    >
+                      Edit team
+                    </DefaultButton>
+                    <DefaultButton
+                      disabled={busyTeamId === team.teamId}
+                      onClick={async () => handleActiveState(team)}
+                    >
+                      {team.isActive ? 'Deactivate' : 'Activate'}
+                    </DefaultButton>
+                    <DefaultButton
+                      className={styles.deleteAction}
+                      iconProps={{ iconName: 'Delete' }}
+                      disabled={busyTeamId === team.teamId}
+                      onClick={(event) => {
+                        if (event.currentTarget instanceof HTMLButtonElement) {
+                          openDeleteConfirmation(team, event.currentTarget);
+                        }
+                      }}
+                    >
+                      Delete
+                    </DefaultButton>
+                  </div>
                 </div>
               </ContentCard>
             </li>
@@ -197,6 +273,40 @@ export function TeamsPage(props: ITeamsPageProps): React.ReactElement {
         onDismiss={handleDismiss}
         panelLayerHostId={props.panelLayerHostId}
       />
+      {deleteTarget !== undefined && (
+        <Dialog
+          hidden={false}
+          dialogContentProps={{
+            type: DialogType.normal,
+            title: `Delete ${deleteTarget.title}?`,
+            closeButtonAriaLabel: 'Close delete confirmation',
+            subText:
+              'Stories, votes, and session history will leave Planning Poker. A site administrator can recover the team only from the SharePoint recycle bin while it is retained there.'
+          }}
+          modalProps={{
+            isBlocking: true
+          }}
+          onDismiss={busyTeamId === deleteTarget.teamId ? undefined : cancelDelete}
+        >
+          {deleteMessage !== undefined && (
+            <MessageBar messageBarType={MessageBarType.error} delayedRender={false}>
+              {deleteMessage}
+            </MessageBar>
+          )}
+          <DialogFooter>
+            <PrimaryButton
+              className={styles.confirmDeleteAction}
+              disabled={busyTeamId === deleteTarget.teamId}
+              onClick={confirmDelete}
+            >
+              {busyTeamId === deleteTarget.teamId ? 'Deleting...' : 'Delete team'}
+            </PrimaryButton>
+            <DefaultButton disabled={busyTeamId === deleteTarget.teamId} onClick={cancelDelete}>
+              Cancel
+            </DefaultButton>
+          </DialogFooter>
+        </Dialog>
+      )}
     </section>
   );
 }

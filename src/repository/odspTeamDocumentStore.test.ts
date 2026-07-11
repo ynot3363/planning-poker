@@ -45,7 +45,8 @@ function createDriveService(): jest.Mocked<IPlanningPokerDriveService> {
     get: jest.fn(async (_driveId: string, _driveItemId: string) => ({
       sharepointIds: { listItemId: '12' }
     })),
-    rename: jest.fn(async (_driveId: string, _driveItemId: string, _fileName: string) => undefined)
+    rename: jest.fn(async (_driveId: string, _driveItemId: string, _fileName: string) => undefined),
+    recycle: jest.fn(async (_driveId: string, _driveItemId: string) => ({}))
   };
 }
 
@@ -207,10 +208,24 @@ describe('OdspTeamDocumentStore', () => {
       'attached-item-id',
       'Renamed Team.fluid'
     );
+    await expect(store.recycle('attached-item-id')).resolves.toEqual({});
+    expect(driveService.recycle).toHaveBeenCalledWith('drive-id', 'attached-item-id');
     handle.dispose();
     handle.dispose();
     expect(view.dispose).toHaveBeenCalledTimes(1);
     expect(services.dispose).toHaveBeenCalledTimes(1);
     expect(container.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('normalizes recycle access denial and unknown failures', async () => {
+    const transport = createTransport(async () => ({ value: [] }));
+    const driveService = createDriveService();
+    const store = new OdspTeamDocumentStore(storage, transport, driveService, tokenProvider);
+    driveService.recycle.mockRejectedValueOnce({ statusCode: 403 });
+
+    await expect(store.recycle('item-id')).rejects.toMatchObject({ code: 'access-denied' });
+
+    driveService.recycle.mockRejectedValueOnce(new Error('sensitive Graph failure'));
+    await expect(store.recycle('item-id')).rejects.toMatchObject({ code: 'recycle-failure' });
   });
 });

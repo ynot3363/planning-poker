@@ -213,7 +213,20 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
       await this.driveService.rename(this.storage.driveId, driveItemId, fileName);
       this.attachedFiles.set(teamId, { driveItemId, fileName });
     } catch (error: unknown) {
-      throw this.normalizeDriveError(error, 'The team file could not be renamed.');
+      throw this.normalizeDriveError(error, 'The team file could not be renamed.', 'disconnected');
+    }
+  }
+
+  /** @inheritdoc */
+  public async recycle(driveItemId: string): Promise<{ readonly recycleBinItemId?: string }> {
+    try {
+      return await this.driveService.recycle(this.storage.driveId, driveItemId);
+    } catch (error: unknown) {
+      throw this.normalizeDriveError(
+        error,
+        'The team could not be moved to the SharePoint recycle bin.',
+        'recycle-failure'
+      );
     }
   }
 
@@ -608,9 +621,14 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
   /**
    * @param error - Unknown Microsoft Graph drive failure.
    * @param fallbackMessage - Safe operation-specific fallback message.
+   * @param fallbackCode - Stable operation-specific fallback category.
    * @returns A safe repository error preserving actionable status categories.
    */
-  private normalizeDriveError(error: unknown, fallbackMessage: string): TeamRepositoryError {
+  private normalizeDriveError(
+    error: unknown,
+    fallbackMessage: string,
+    fallbackCode: 'disconnected' | 'recycle-failure'
+  ): TeamRepositoryError {
     const status =
       typeof error === 'object' && error !== null && 'statusCode' in error
         ? Number((error as { statusCode?: unknown }).statusCode)
@@ -624,6 +642,6 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
     if (status === 404) {
       return new TeamRepositoryError('not-found', 'The team file could not be found.');
     }
-    return new TeamRepositoryError('disconnected', fallbackMessage);
+    return new TeamRepositoryError(fallbackCode, fallbackMessage);
   }
 }

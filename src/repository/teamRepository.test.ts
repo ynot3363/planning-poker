@@ -44,6 +44,7 @@ function createStore(handle: TeamDocumentHandle = createHandle()): ITeamDocument
     create: jest.fn(async () => handle),
     load: jest.fn(async () => handle),
     rename: jest.fn(async () => undefined),
+    recycle: jest.fn(async () => ({})),
     updateMetadata: jest.fn(async () => undefined)
   };
 }
@@ -180,5 +181,87 @@ describe('TeamRepository', () => {
     expect(handle.waitForSaved).not.toHaveBeenCalled();
     expect(store.rename).not.toHaveBeenCalled();
     expect(store.updateMetadata).not.toHaveBeenCalled();
+  });
+
+  it('verifies Fluid host state and recycles the complete team document', async () => {
+    const handle = createHandle();
+    const store = createStore(handle);
+    jest.mocked(store.list).mockResolvedValue([
+      {
+        teamId: fixtureDocument.team.id,
+        driveItemId: handle.driveItemId,
+        title: fixtureDocument.team.title,
+        isActive: true
+      }
+    ]);
+    jest.mocked(store.recycle).mockResolvedValue({ recycleBinItemId: 'recycle-id' });
+    const repository = new TeamRepository(storage, store);
+
+    await expect(repository.deleteTeam(fixtureDocument.team.id, fixtureUser)).resolves.toEqual({
+      recycleBinItemId: 'recycle-id'
+    });
+
+    expect(store.load).toHaveBeenCalledWith(handle.driveItemId);
+    expect(store.recycle).toHaveBeenCalledWith(handle.driveItemId);
+    expect(handle.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks deletion for a stale metadata host or any non-empty open session', async () => {
+    const staleHostHandle = createHandle({
+      ...fixtureDocument,
+      team: {
+        ...fixtureDocument.team,
+        hosts: [{ ...fixtureUser, objectId: 'another-host' }]
+      }
+    });
+    const staleHostStore = createStore(staleHostHandle);
+    jest.mocked(staleHostStore.list).mockResolvedValue([
+      {
+        teamId: fixtureDocument.team.id,
+        driveItemId: staleHostHandle.driveItemId,
+        title: fixtureDocument.team.title,
+        isActive: true
+      }
+    ]);
+    await expect(
+      new TeamRepository(storage, staleHostStore).deleteTeam(fixtureDocument.team.id, fixtureUser)
+    ).rejects.toMatchObject({ code: 'host-mismatch' });
+    expect(staleHostStore.recycle).not.toHaveBeenCalled();
+    expect(staleHostHandle.dispose).toHaveBeenCalledTimes(1);
+
+    const openSessionHandle = createHandle({ ...fixtureDocument, openSessionId: 'session-id' });
+    const openSessionStore = createStore(openSessionHandle);
+    jest.mocked(openSessionStore.list).mockResolvedValue([
+      {
+        teamId: fixtureDocument.team.id,
+        driveItemId: openSessionHandle.driveItemId,
+        title: fixtureDocument.team.title,
+        isActive: true
+      }
+    ]);
+    await expect(
+      new TeamRepository(storage, openSessionStore).deleteTeam(fixtureDocument.team.id, fixtureUser)
+    ).rejects.toMatchObject({ code: 'open-session' });
+    expect(openSessionStore.recycle).not.toHaveBeenCalled();
+    expect(openSessionHandle.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('normalizes an unknown recycle failure without claiming deletion', async () => {
+    const handle = createHandle();
+    const store = createStore(handle);
+    jest.mocked(store.list).mockResolvedValue([
+      {
+        teamId: fixtureDocument.team.id,
+        driveItemId: handle.driveItemId,
+        title: fixtureDocument.team.title,
+        isActive: true
+      }
+    ]);
+    jest.mocked(store.recycle).mockRejectedValue(new Error('sensitive transport failure'));
+
+    await expect(
+      new TeamRepository(storage, store).deleteTeam(fixtureDocument.team.id, fixtureUser)
+    ).rejects.toMatchObject({ code: 'recycle-failure' });
+    expect(handle.dispose).toHaveBeenCalledTimes(1);
   });
 });

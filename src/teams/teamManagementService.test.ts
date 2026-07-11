@@ -49,6 +49,7 @@ function createService(handle: TeamDocumentHandle = createHandle()): {
     create: jest.fn(async () => handle),
     load: jest.fn(async () => handle),
     rename: jest.fn(async () => undefined),
+    recycle: jest.fn(async () => ({})),
     updateMetadata: jest.fn(async () => undefined)
   };
   return {
@@ -113,5 +114,55 @@ describe('TeamManagementService', () => {
       'Delivery Team.fluid'
     );
     expect(handle.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies active-state changes through the authoritative Fluid workflow', async () => {
+    const handle = createHandle();
+    const { service, store } = createService(handle);
+    const summary = (await service.listTeams())[0];
+
+    await expect(service.setTeamActive(summary, false)).resolves.toEqual({ isSaved: true });
+
+    expect(handle.getSnapshot().team.isActive).toBe(false);
+    expect(store.updateMetadata).toHaveBeenCalledWith(
+      expect.objectContaining({ team: expect.objectContaining({ isActive: false }) })
+    );
+    expect(handle.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns typed cancellation and recycle success outcomes', async () => {
+    const handle = createHandle();
+    const { service, store } = createService(handle);
+    const summary = (await service.listTeams())[0];
+    jest.mocked(store.list).mockResolvedValue([summary]);
+    jest.mocked(store.recycle).mockResolvedValue({ recycleBinItemId: 'recycle-id' });
+
+    await expect(service.deleteTeam({ team: summary, isConfirmed: false })).resolves.toEqual({
+      code: 'confirmation-cancelled'
+    });
+    expect(store.recycle).not.toHaveBeenCalled();
+
+    await expect(service.deleteTeam({ team: summary, isConfirmed: true })).resolves.toEqual({
+      code: 'success',
+      recycleBinItemId: 'recycle-id'
+    });
+    expect(store.recycle).toHaveBeenCalledWith(handle.driveItemId);
+  });
+
+  it('returns an open-session outcome without recycling the team', async () => {
+    const handle = createHandle();
+    jest.spyOn(handle, 'getSnapshot').mockReturnValue({
+      ...fixtureDocument,
+      openSessionId: 'session-id'
+    });
+    const { service, store } = createService(handle);
+    const summary = (await service.listTeams())[0];
+    jest.mocked(store.list).mockResolvedValue([summary]);
+
+    await expect(service.deleteTeam({ team: summary, isConfirmed: true })).resolves.toEqual({
+      code: 'open-session',
+      message: "End the team's open voting session before deleting it."
+    });
+    expect(store.recycle).not.toHaveBeenCalled();
   });
 });

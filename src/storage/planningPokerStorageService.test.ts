@@ -22,7 +22,8 @@ function createDriveService(
     getDrive: jest.fn(async (driveId: string) => ({ id: driveId })),
     getByPath: jest.fn(async (_driveId: string, _fileName: string) => ({})),
     get: jest.fn(async (_driveId: string, _driveItemId: string) => ({})),
-    rename: jest.fn(async (_driveId: string, _driveItemId: string, _fileName: string) => undefined)
+    rename: jest.fn(async (_driveId: string, _driveItemId: string, _fileName: string) => undefined),
+    recycle: jest.fn(async (_driveId: string, _driveItemId: string) => ({}))
   };
 }
 

@@ -2,17 +2,22 @@ import type { MSGraphClientV3 } from '@microsoft/sp-http';
 import { GraphDriveService } from './graphDriveService';
 
 describe('GraphDriveService', () => {
-  it('renames the configured drive item through Graph v1.0', async () => {
+  it('renames and recycles the configured drive item through Graph v1.0', async () => {
     const patch = jest.fn(async () => ({ id: 'item-id', name: 'Renamed Team.fluid' }));
-    const version = jest.fn(() => ({ patch }));
+    const remove = jest.fn(async () => ({ id: 'recycle-id' }));
+    const version = jest.fn(() => ({ patch, delete: remove }));
     const api = jest.fn(() => ({ version }));
     const service = new GraphDriveService({ api } as unknown as MSGraphClientV3);
 
     await service.rename('drive-id', 'item-id', 'Renamed Team.fluid');
+    await expect(service.recycle('drive-id', 'item-id')).resolves.toEqual({
+      recycleBinItemId: 'recycle-id'
+    });
 
     expect(api).toHaveBeenCalledWith('/drives/drive-id/items/item-id');
     expect(version).toHaveBeenCalledWith('v1.0');
     expect(patch).toHaveBeenCalledWith({ name: 'Renamed Team.fluid' });
+    expect(remove).toHaveBeenCalledTimes(1);
   });
 
   it('uses Graph for site drives and drive-item reads', async () => {

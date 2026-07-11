@@ -137,7 +137,8 @@ GET https://graph.microsoft.com/v1.0/sites/{hostname}:/{site-path}:/drives
 
 The application must request the delegated Microsoft Graph `Files.ReadWrite`
 permission through the SPFx solution manifest, and a tenant administrator must
-approve it before Graph-backed drive discovery and rename operations can run.
+approve it before Graph-backed drive discovery, rename, and recycle operations
+can run.
 
 Match by:
 

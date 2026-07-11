@@ -7,7 +7,7 @@
 .teamGrid {
   display: grid;
   gap: 16px;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   list-style: none;
   margin: 0;
   padding: 0;
@@ -39,7 +39,35 @@
   padding: 2px 8px;
 }
 
-.cardAction {
-  align-self: flex-start;
+.cardActions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   margin-block-start: auto;
+}
+
+.deleteAction,
+.confirmDeleteAction {
+  border-color: '[theme:errorText, default: #a4262c]';
+  color: '[theme:errorText, default: #a4262c]';
+}
+
+.confirmDeleteAction {
+  background: '[theme:errorText, default: #a4262c]';
+  color: '[theme:white, default: #ffffff]';
+}
+
+@media (max-width: 640px) {
+  .teamGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (forced-colors: active) {
+  .deleteAction,
+  .confirmDeleteAction {
+    border-color: ButtonText;
+    color: ButtonText;
+  }
 }

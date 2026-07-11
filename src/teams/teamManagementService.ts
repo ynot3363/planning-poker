@@ -19,6 +19,23 @@ export type TeamSaveResult =
   | { readonly isSaved: true }
   | { readonly isSaved: false; readonly fieldErrors: TeamFormErrors; readonly message?: string };
 
+/** Explicit request passed through the confirmation boundary before deletion. */
+export interface TeamDeleteRequest {
+  /** Team selected from the hosted-team list. */
+  readonly team: HostedTeamSummary;
+  /** Whether the user explicitly confirmed the destructive action. */
+  readonly isConfirmed: boolean;
+}
+
+/** Typed deletion outcomes consumed by the confirmation experience. */
+export type TeamDeleteResult =
+  | { readonly code: 'success'; readonly recycleBinItemId?: string }
+  | { readonly code: 'confirmation-cancelled' }
+  | {
+      readonly code: 'open-session' | 'not-found' | 'access-denied' | 'recycle-failure';
+      readonly message: string;
+    };
+
 /** Defines host-facing team administration operations consumed by React. */
 export interface ITeamManagementService {
   /** @returns Teams discovered through current-user host metadata. */
@@ -54,6 +71,21 @@ export interface ITeamManagementService {
     values: TeamFormValues,
     existingTeams: readonly HostedTeamSummary[]
   ): Promise<TeamSaveResult>;
+  /**
+   * Applies the reversible active-state action from a hosted-team card.
+   *
+   * @param team - Team selected from the hosted-team list.
+   * @param isActive - Requested active state.
+   * @returns Save outcome and safe workflow feedback.
+   */
+  setTeamActive(team: HostedTeamSummary, isActive: boolean): Promise<TeamSaveResult>;
+  /**
+   * Recycles a team only after explicit confirmation and authoritative host/session checks.
+   *
+   * @param request - Selected team and confirmation state.
+   * @returns A typed cancellation, failure, or success outcome.
+   */
+  deleteTeam(request: TeamDeleteRequest): Promise<TeamDeleteResult>;
   /** @param session - Loaded edit session to release. @returns `void` after disposal. */
   closeTeam(session: TeamEditSession): void;
 }
@@ -138,6 +170,69 @@ export class TeamManagementService implements ITeamManagementService {
       return { isSaved: true };
     } catch (error: unknown) {
       return this.mapSaveError(error);
+    }
+  }
+
+  /** @inheritdoc */
+  public async setTeamActive(team: HostedTeamSummary, isActive: boolean): Promise<TeamSaveResult> {
+    let session: TeamEditSession | undefined;
+    try {
+      session = await this.openTeam(team);
+      const submission = createTeamFormSubmission(
+        { ...session.values, isActive },
+        {
+          currentUser: this.currentUser,
+          existingTeam: session.team,
+          existingTeams: [team],
+          createId: this.createId,
+          now: this.now
+        }
+      );
+      if (!submission.isValid) {
+        return { isSaved: false, fieldErrors: submission.errors };
+      }
+      await this.repository.updateTeamDocument(session.handle, this.currentUser, submission.team);
+      return { isSaved: true };
+    } catch (error: unknown) {
+      return this.mapSaveError(error);
+    } finally {
+      if (session !== undefined) {
+        this.closeTeam(session);
+      }
+    }
+  }
+
+  /** @inheritdoc */
+  public async deleteTeam(request: TeamDeleteRequest): Promise<TeamDeleteResult> {
+    if (!request.isConfirmed) {
+      return { code: 'confirmation-cancelled' };
+    }
+    try {
+      const result = await this.repository.deleteTeam(request.team.teamId, this.currentUser);
+      return result.recycleBinItemId === undefined
+        ? { code: 'success' }
+        : { code: 'success', recycleBinItemId: result.recycleBinItemId };
+    } catch (error: unknown) {
+      if (error instanceof TeamRepositoryError) {
+        if (
+          error.code === 'open-session' ||
+          error.code === 'not-found' ||
+          error.code === 'access-denied' ||
+          error.code === 'recycle-failure'
+        ) {
+          return { code: error.code, message: error.message };
+        }
+        if (error.code === 'host-mismatch') {
+          return {
+            code: 'access-denied',
+            message: 'Only a current team host can delete this team.'
+          };
+        }
+      }
+      return {
+        code: 'recycle-failure',
+        message: 'The team could not be moved to the SharePoint recycle bin. Try again.'
+      };
     }
   }
 
