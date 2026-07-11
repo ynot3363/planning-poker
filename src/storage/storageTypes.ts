@@ -72,6 +72,8 @@ export interface ISharePointList {
   readonly Title: string;
   /** The optionally expanded library root folder. */
   readonly RootFolder?: { readonly ServerRelativeUrl?: string };
+  /** Whether the library already has an independent role-assignment scope. */
+  readonly HasUniqueRoleAssignments?: boolean;
 }
 
 /** Represents a SharePoint metadata field returned by REST. */

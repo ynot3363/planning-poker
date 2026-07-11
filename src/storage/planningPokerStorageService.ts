@@ -21,6 +21,21 @@ import {
 const LISTS_PATH =
   '_api/web/lists?$select=Id,Title,RootFolder/ServerRelativeUrl&$expand=RootFolder';
 const MANAGE_LISTS_PERMISSION_MASK = 0x00000800;
+const SHAREPOINT_GROUP_PRINCIPAL_TYPE = 8;
+const CONTRIBUTE_ROLE_TYPE = 3;
+const CONTRIBUTOR_OR_STRONGER_ROLE_TYPES = new Set([3, 4, 5, 6]);
+
+interface IRoleDefinitionBinding {
+  readonly RoleTypeKind?: unknown;
+}
+
+interface IRoleAssignment {
+  readonly Member?: {
+    readonly Id?: unknown;
+    readonly PrincipalType?: unknown;
+  };
+  readonly RoleDefinitionBindings?: unknown;
+}
 
 /** Provisions and discovers the site-scoped SharePoint storage used by Planning Poker. */
 export class PlanningPokerStorageService implements IPlanningPokerStorageService {
@@ -112,6 +127,7 @@ export class PlanningPokerStorageService implements IPlanningPokerStorageService
     const discoveredList = (await this.findLibrary()) ?? (await this.createLibrary());
     const list = await this.waitForLibraryRoot(discoveredList);
     await this.ensureFields(list);
+    await this.ensureLibraryPermissions(list);
     const configuration = await this.createConfiguration(list);
     await this.hideLibrary(list);
     return configuration;
@@ -150,7 +166,8 @@ export class PlanningPokerStorageService implements IPlanningPokerStorageService
       Title: PLANNING_POKER_LIBRARY_TITLE,
       Description:
         'Planning Poker application data. Hidden infrastructure, not a security boundary.',
-      AllowContentTypes: false
+      AllowContentTypes: false,
+      OnQuickLaunch: false
     });
   }
 
@@ -198,6 +215,140 @@ export class PlanningPokerStorageService implements IPlanningPokerStorageService
         );
       }
     }
+  }
+
+  /**
+   * Creates an independent library permission scope and grants site-level SharePoint groups at
+   * least Contribute without replacing stronger library roles.
+   *
+   * @param list - Storage library whose collaboration permissions must be repaired.
+   * @returns A promise that resolves after every required role assignment is present.
+   * @throws Throws when SharePoint cannot inspect or update the permission boundary.
+   */
+  private async ensureLibraryPermissions(list: ISharePointList): Promise<void> {
+    const listPath = this.getListPath(list.Id);
+    const permissionState = await this.transport.get<unknown>(
+      `${listPath}?$select=HasUniqueRoleAssignments`
+    );
+    if (!this.hasUniqueRoleAssignments(permissionState)) {
+      await this.transport.post(
+        `${listPath}/breakroleinheritance(copyRoleAssignments=true,clearSubscopes=false)`
+      );
+    }
+    const siteAssignments = await this.getRoleAssignments('_api/web/roleassignments');
+    const libraryAssignments = await this.getRoleAssignments(`${listPath}/roleassignments`);
+    const siteGroupIds = siteAssignments
+      .filter((assignment) => this.isSharePointGroupAssignment(assignment))
+      .map((assignment) => this.readPositiveInteger(assignment.Member?.Id))
+      .filter((groupId): groupId is number => groupId !== undefined);
+    const groupsWithContribute = new Set(
+      libraryAssignments
+        .filter(
+          (assignment) =>
+            this.isSharePointGroupAssignment(assignment) &&
+            this.hasContributorOrStrongerRole(assignment)
+        )
+        .map((assignment) => this.readPositiveInteger(assignment.Member?.Id))
+        .filter((groupId): groupId is number => groupId !== undefined)
+    );
+    const groupsToUpgrade = Array.from(new Set(siteGroupIds)).filter(
+      (groupId) => !groupsWithContribute.has(groupId)
+    );
+    if (groupsToUpgrade.length === 0) {
+      return;
+    }
+    const contributeRoleId = await this.getContributeRoleDefinitionId();
+    for (const groupId of groupsToUpgrade) {
+      await this.transport.post(
+        `${listPath}/roleassignments/addroleassignment(principalid=${groupId},roledefid=${contributeRoleId})`
+      );
+    }
+  }
+
+  /**
+   * Reads expanded role assignments from a site or library scope.
+   *
+   * @param path - Same-origin role-assignment endpoint.
+   * @returns Normalized assignments including principal and role bindings.
+   */
+  private async getRoleAssignments(path: string): Promise<readonly IRoleAssignment[]> {
+    return this.getPagedCollection<IRoleAssignment>(
+      `${path}?$select=Member/Id,Member/PrincipalType,RoleDefinitionBindings/RoleTypeKind&$expand=Member,RoleDefinitionBindings`
+    );
+  }
+
+  /**
+   * Resolves SharePoint's built-in Contribute role definition without relying on a localized name.
+   *
+   * @returns The positive site-scoped role definition identifier.
+   * @throws Throws when SharePoint returns an invalid role definition.
+   */
+  private async getContributeRoleDefinitionId(): Promise<number> {
+    const response = await this.transport.get<unknown>(
+      `_api/web/roledefinitions/getbytype(${CONTRIBUTE_ROLE_TYPE})?$select=Id`
+    );
+    const direct = this.readObjectProperty(response, 'Id');
+    const verbose = this.readObjectProperty(this.readObjectProperty(response, 'd'), 'Id');
+    const roleId = this.readPositiveInteger(direct ?? verbose);
+    if (roleId === undefined) {
+      throw new Error('SharePoint returned an invalid Contribute role definition.');
+    }
+    return roleId;
+  }
+
+  /**
+   * @param value - Untrusted list response.
+   * @returns Whether the response reports a unique permission scope.
+   */
+  private hasUniqueRoleAssignments(value: unknown): boolean {
+    const direct = this.readObjectProperty(value, 'HasUniqueRoleAssignments');
+    const verbose = this.readObjectProperty(
+      this.readObjectProperty(value, 'd'),
+      'HasUniqueRoleAssignments'
+    );
+    return direct === true || verbose === true;
+  }
+
+  /**
+   * @param assignment - Expanded role assignment.
+   * @returns Whether the assignment belongs to a SharePoint group principal.
+   */
+  private isSharePointGroupAssignment(assignment: IRoleAssignment): boolean {
+    return Number(assignment.Member?.PrincipalType) === SHAREPOINT_GROUP_PRINCIPAL_TYPE;
+  }
+
+  /**
+   * @param assignment - Expanded library role assignment.
+   * @returns Whether the assignment contains a built-in Contribute-or-stronger role.
+   */
+  private hasContributorOrStrongerRole(assignment: IRoleAssignment): boolean {
+    const directResults = this.readObjectProperty(assignment.RoleDefinitionBindings, 'results');
+    const bindings = Array.isArray(directResults)
+      ? (directResults as readonly IRoleDefinitionBinding[])
+      : normalizeCollection<IRoleDefinitionBinding>(assignment.RoleDefinitionBindings);
+    return bindings.some((binding) =>
+      CONTRIBUTOR_OR_STRONGER_ROLE_TYPES.has(Number(binding.RoleTypeKind))
+    );
+  }
+
+  /**
+   * @param value - Untrusted numeric value.
+   * @returns A positive integer when valid.
+   */
+  private readPositiveInteger(value: unknown): number | undefined {
+    const parsed = typeof value === 'number' ? value : Number(value);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+  }
+
+  /**
+   * @param value - Untrusted response value.
+   * @param property - Property name to read.
+   * @returns The property value when present on an object.
+   */
+  private readObjectProperty(value: unknown, property: string): unknown {
+    return typeof value === 'object' && value !== null && property in value
+      ? (value as Record<string, unknown>)[property]
+      : undefined;
   }
 
   /**
