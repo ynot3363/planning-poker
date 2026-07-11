@@ -298,6 +298,13 @@
   line-height: 1;
 }
 
+.timerExpired {
+  background: '[theme:yellowLight, default: #fff4ce]';
+  border-inline-start: 3px solid '[theme:orange, default: #d83b01]';
+  color: '[theme:neutralPrimary, default: #323130]';
+  padding: 8px;
+}
+
 .participantList li {
   align-items: flex-start;
   display: flex;

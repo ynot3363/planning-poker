@@ -645,6 +645,51 @@ describe('VotingPage', () => {
     expect(container.textContent).toContain('Reset');
   });
 
+  it('omits timer controls and placeholders when the session timer is disabled', async () => {
+    const untimedSession: VotingSession = {
+      ...session,
+      status: 'Active',
+      settings: {
+        scaleKind: session.settings.scaleKind,
+        scaleValues: session.settings.scaleValues,
+        timerEnabled: false,
+        votingMode: session.settings.votingMode
+      },
+      rounds: [
+        {
+          id: 'untimed-round',
+          storyId: 'untimed-story',
+          storySnapshot: { storyId: 'untimed-story', title: 'Untimed story', description: '' },
+          status: 'Voting',
+          votes: [],
+          timer: { configuredDurationSeconds: 0, status: 'Ready', remainingSeconds: 0 }
+        }
+      ],
+      activeRoundId: 'untimed-round'
+    };
+    const service = createService(true, untimedSession);
+
+    await act(async () => {
+      renderVoting(
+        <VotingPage
+          service={service}
+          serviceScope={serviceScope}
+          teamId={team.teamId}
+          sessionId={session.id}
+          onOpenSession={jest.fn()}
+        />,
+        container
+      );
+    });
+
+    expect(
+      Array.from(container.querySelectorAll('h3')).some(
+        (heading) => heading.textContent === 'Timer'
+      )
+    ).toBe(false);
+    expect(service.startTimer).not.toHaveBeenCalled();
+  });
+
   it('does not render an unsafe persisted story link', async () => {
     const unsafeSession: VotingSession = {
       ...session,

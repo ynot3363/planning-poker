@@ -587,10 +587,17 @@ describe('VotingSessionService', () => {
     expect(host.getSession().rounds[0].timer.status).toBe('Running');
     await harness.service.stopTimer(host, roundId);
     expect(host.getSession().rounds[0].timer.status).toBe('Stopped');
+    await harness.service.startTimer(host, roundId);
+    expect(host.getSession().rounds[0].timer.status).toBe('Running');
     await harness.service.resetTimer(host, roundId);
     expect(host.getSession().rounds[0].timer).toMatchObject({
       status: 'Ready',
       remainingSeconds: 300
+    });
+    jest.mocked(harness.handle.updateVotingTimer).mockReturnValueOnce('invalid-command');
+    await expect(harness.service.startTimer(host, roundId)).rejects.toMatchObject({
+      code: 'invalid-timer-command',
+      message: 'The timer has already moved to another state.'
     });
   });
 

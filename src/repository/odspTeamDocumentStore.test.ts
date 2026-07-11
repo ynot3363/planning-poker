@@ -345,12 +345,63 @@ describe('OdspTeamDocumentStore', () => {
     ).toBe('updated');
     expect(handle.getSnapshot().sessions[0].rounds[1].timer.status).toBe('Running');
     expect(
+      handle.updateVotingTimer(
+        lobby.id,
+        'round-2',
+        'start',
+        fixtureUser,
+        '2026-07-10T00:01:05.000Z'
+      )
+    ).toBe('invalid-command');
+    expect(
       handle.updateVotingTimer(lobby.id, 'round-2', 'stop', fixtureUser, '2026-07-10T00:01:30.000Z')
     ).toBe('updated');
     expect(handle.getSnapshot().sessions[0].rounds[1].timer).toMatchObject({
       status: 'Stopped',
       remainingSeconds: 270
     });
+    expect(
+      handle.updateVotingTimer(lobby.id, 'round-2', 'stop', fixtureUser, '2026-07-10T00:01:31.000Z')
+    ).toBe('invalid-command');
+    expect(
+      handle.updateVotingTimer(
+        lobby.id,
+        'round-2',
+        'start',
+        fixtureUser,
+        '2026-07-10T00:01:40.000Z'
+      )
+    ).toBe('updated');
+    expect(handle.getSnapshot().sessions[0].rounds[1].timer).toMatchObject({
+      status: 'Running',
+      remainingSeconds: 270,
+      startedAt: '2026-07-10T00:01:40.000Z'
+    });
+    expect(
+      handle.updateVotingTimer(lobby.id, 'round-2', 'stop', fixtureUser, '2026-07-10T00:01:50.000Z')
+    ).toBe('updated');
+    expect(handle.getSnapshot().sessions[0].rounds[1].timer).toMatchObject({
+      status: 'Stopped',
+      remainingSeconds: 260
+    });
+    expect(
+      handle.updateVotingTimer(
+        lobby.id,
+        'round-2',
+        'reset',
+        fixtureUser,
+        '2026-07-10T00:01:52.000Z'
+      )
+    ).toBe('updated');
+    expect(
+      handle.updateVotingTimer(
+        lobby.id,
+        'round-2',
+        'reset',
+        fixtureUser,
+        '2026-07-10T00:01:53.000Z'
+      )
+    ).toBe('invalid-command');
     const currentSession = handle.getSnapshot().sessions[0];
     handle.updateSessions(
       [

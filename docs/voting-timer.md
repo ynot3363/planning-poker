@@ -13,4 +13,6 @@ Running state persists the remaining-at-start seconds and an ISO start time.
 Clients derive countdown display locally and never write per-second Fluid
 operations. Stop calculates and persists the remaining whole seconds; reset
 restores the configured duration. Reaching zero produces an `Expired`
-presentation state only.
+presentation state and an explicit warning that voting remains open. Duplicate
+start, stop, and fully-reset commands are rejected at the transaction boundary
+so stale host controls cannot rewind or rebase the synchronized timer.

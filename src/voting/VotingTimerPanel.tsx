@@ -41,9 +41,12 @@ export function VotingTimerPanel(props: IVotingTimerPanelProps): React.ReactElem
       >
         {presentation.formattedTime}
       </p>
-      <p className={styles.timerStatus} role="status">
-        {presentation.status}
-      </p>
+      <p className={styles.timerStatus}>{presentation.status}</p>
+      {presentation.status === 'Expired' && (
+        <p className={styles.timerExpired} role="status">
+          Time expired. Voting remains open.
+        </p>
+      )}
       <RoleGuard allowed={props.isHost}>
         <div className={styles.timerActions}>
           {presentation.status === 'Running' ? (
@@ -58,7 +61,14 @@ export function VotingTimerPanel(props: IVotingTimerPanelProps): React.ReactElem
               {presentation.status === 'Stopped' ? 'Resume' : 'Start'}
             </PrimaryButton>
           )}
-          <DefaultButton disabled={props.disabled} onClick={props.onReset}>
+          <DefaultButton
+            disabled={
+              props.disabled ||
+              (presentation.status === 'Ready' &&
+                presentation.remainingSeconds === props.timer.configuredDurationSeconds)
+            }
+            onClick={props.onReset}
+          >
             Reset
           </DefaultButton>
         </div>

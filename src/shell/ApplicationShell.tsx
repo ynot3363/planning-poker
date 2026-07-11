@@ -169,8 +169,11 @@ function AboutView(): React.ReactElement {
         <h2>Scales, timer, and activity</h2>
         <p>
           Choose the fixed Fibonacci or T-shirt scale, or arrange two to twenty unique custom values
-          such as 1, 2, 4, and 8. The optional timer supports 1 to 60 minutes. Inactive teams remain
-          editable but cannot start new voting sessions.
+          such as 1, 2, 4, and 8. The optional 1-to-60-minute timer starts in Ready state for each
+          story. Hosts can start, stop, resume, and reset it while participants receive the same
+          read-only countdown. Expiration is informational and never reveals votes, locks voting,
+          assigns points, or ends the session. Inactive teams remain editable but cannot start new
+          voting sessions.
         </p>
       </ContentCard>
       <ContentCard label="Action guidance">

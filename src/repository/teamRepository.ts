@@ -96,6 +96,7 @@ export type VotingTimerResult =
   | 'invalid-session'
   | 'host-required'
   | 'invalid-round'
+  | 'invalid-command'
   | 'timer-disabled';
 
 /** Owns one loaded Fluid document and its subscription lifecycle. */

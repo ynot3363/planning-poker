@@ -24,6 +24,7 @@ export type VotingSessionErrorCode =
   | 'active-round'
   | 'round-has-votes'
   | 'invalid-round'
+  | 'invalid-timer-command'
   | 'invalid-vote'
   | 'save-failure';
 
@@ -453,9 +454,15 @@ export class VotingSessionService implements IVotingSessionService {
           'invalid-session': 'This voting session is no longer active.',
           'host-required': 'Only a current team host can control the timer.',
           'invalid-round': 'The timer belongs to a different active story.',
+          'invalid-command': 'The timer has already moved to another state.',
           'timer-disabled': 'This voting session does not use a timer.'
         } as const;
-        const code = result === 'host-required' ? 'host-required' : 'invalid-round';
+        const code =
+          result === 'host-required'
+            ? 'host-required'
+            : result === 'invalid-command'
+              ? 'invalid-timer-command'
+              : 'invalid-round';
         throw new VotingSessionError(code, messages[result]);
       }
       await context.handle.waitForSaved();

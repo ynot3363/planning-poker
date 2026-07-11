@@ -147,6 +147,7 @@ describe('ApplicationShell', () => {
     expect(container.textContent).toContain('Named and anonymous voting');
     expect(container.textContent).toContain('Results and exports');
     expect(container.textContent).toContain('Host and participant capabilities');
+    expect(container.textContent).toContain('Expiration is informational');
     expect(container.textContent).not.toContain('Getting started');
     expect(container.textContent).not.toContain('hidden Planning Poker data library');
     expect(container.firstElementChild?.getAttribute('data-theme')).toBe('dark');

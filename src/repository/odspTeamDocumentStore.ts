@@ -871,6 +871,17 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
             ? Math.max(0, Math.floor(elapsedMilliseconds / 1000))
             : 0;
           const remainingSeconds = Math.max(0, round.timer.remainingSeconds - elapsedSeconds);
+          const isFullyReset =
+            round.timer.status === 'Ready' &&
+            round.timer.remainingSeconds === round.timer.configuredDurationSeconds;
+          if (
+            (command === 'start' && (round.timer.status === 'Running' || remainingSeconds === 0)) ||
+            (command === 'stop' && round.timer.status !== 'Running') ||
+            (command === 'reset' && isFullyReset)
+          ) {
+            result = 'invalid-command';
+            return;
+          }
           const mutableRound = round as unknown as IMutableVotingRound;
           if (command === 'reset') {
             mutableRound.timer = {
