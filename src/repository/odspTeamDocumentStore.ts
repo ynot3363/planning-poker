@@ -13,6 +13,7 @@ import type {
   PlanningPokerDocumentRoot,
   PlanningPokerTeam,
   PointingStory,
+  SessionParticipant,
   UserReference,
   VotingSession
 } from '../domain/planningPokerDomain';
@@ -23,7 +24,12 @@ import type {
 } from '../storage/storageTypes';
 import type { IGraphDriveItem, IPlanningPokerDriveService } from './graphDriveService';
 import { TeamRepositoryError, projectTeamMetadata } from './teamRepository';
-import type { HostedTeamSummary, ITeamDocumentStore, TeamDocumentHandle } from './teamRepository';
+import type {
+  HostedTeamSummary,
+  ITeamDocumentStore,
+  SessionParticipantJoin,
+  TeamDocumentHandle
+} from './teamRepository';
 
 const MIN_FLUID_VERSION = '2.111.0' as const;
 const SAVE_TIMEOUT_MS = 15_000;
@@ -68,9 +74,11 @@ interface ITreeRootView {
   readonly compatibility: {
     readonly canInitialize: boolean;
     readonly canView: boolean;
+    readonly canUpgrade?: boolean;
   };
   root: unknown;
   initialize(content: unknown): void;
+  upgradeSchema(): void;
   dispose(): void;
 }
 
@@ -79,6 +87,13 @@ interface IMutableDocumentRoot {
   stories: readonly PointingStory[];
   sessions: readonly VotingSession[];
   openSessionId?: string;
+  updatedAt: string;
+}
+
+interface IMutableVotingSession {
+  readonly id: string;
+  readonly status: VotingSession['status'];
+  participants: readonly SessionParticipant[];
   updatedAt: string;
 }
 
@@ -193,6 +208,9 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
       }
       const view = container.initialObjects.appTree.viewWith(treeConfiguration);
       const untypedView = view as unknown as ITreeRootView;
+      if (!untypedView.compatibility.canView && untypedView.compatibility.canUpgrade === true) {
+        untypedView.upgradeSchema();
+      }
       if (!untypedView.compatibility.canView) {
         view.dispose();
         services.dispose();
@@ -347,6 +365,79 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
           document.updatedAt = updatedAt;
         });
         return selectedSessionId;
+      },
+      joinVotingSession: (sessionId, participant, timestamp) => {
+        let selected: SessionParticipant | undefined;
+        Tree.runTransaction(view, (root) => {
+          const document = root as unknown as IMutableDocumentRoot;
+          const sessionNode = document.sessions.find(
+            (candidate) =>
+              candidate.id === sessionId &&
+              (candidate.status === 'Lobby' || candidate.status === 'Active')
+          );
+          if (sessionNode === undefined) {
+            return;
+          }
+          const session = sessionNode as unknown as IMutableVotingSession;
+          const currentParticipants = cloneParticipants(session.participants);
+          const existing = findJoinedParticipant(currentParticipants, participant);
+          if (existing !== undefined) {
+            selected = {
+              ...existing,
+              presence: { connection: 'Connected', lastSeenAt: timestamp }
+            };
+          } else if (participant.kind === 'Named') {
+            selected = {
+              kind: 'Named',
+              id: participant.participantId,
+              user: participant.user,
+              joinedAt: timestamp,
+              presence: { connection: 'Connected', lastSeenAt: timestamp }
+            };
+          } else {
+            const aliasNumber = nextAnonymousAliasNumber(currentParticipants);
+            selected = {
+              kind: 'Anonymous',
+              id: participant.participantId,
+              alias: `Participant ${aliasNumber}`,
+              joinedAt: timestamp,
+              presence: { connection: 'Connected', lastSeenAt: timestamp }
+            };
+          }
+          const selectedParticipant = selected;
+          if (selectedParticipant === undefined) {
+            return;
+          }
+          const participants =
+            existing === undefined
+              ? [...currentParticipants, selectedParticipant]
+              : currentParticipants.map((current) =>
+                  current.id === existing.id ? selectedParticipant : current
+                );
+          session.participants = participants;
+          session.updatedAt = timestamp;
+          document.updatedAt = timestamp;
+        });
+        return selected;
+      },
+      setVotingParticipantConnection: (sessionId, participantId, connection, timestamp) => {
+        Tree.runTransaction(view, (root) => {
+          const document = root as unknown as IMutableDocumentRoot;
+          const sessionNode = document.sessions.find((session) => session.id === sessionId);
+          if (sessionNode === undefined) {
+            return;
+          }
+          const session = sessionNode as unknown as IMutableVotingSession;
+          const participants = cloneParticipants(session.participants).map((participant) =>
+            participant.id === participantId
+              ? {
+                  ...participant,
+                  presence: { connection, lastSeenAt: timestamp }
+                }
+              : participant
+          );
+          session.participants = participants;
+        });
       },
       waitForSaved: () => this.waitForSaved(container),
       subscribe: (listener) => {
@@ -773,4 +864,56 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
     }
     return new TeamRepositoryError(fallbackCode, fallbackMessage);
   }
+}
+
+/**
+ * Finds an existing logical participant without correlating anonymous state to M365 identity.
+ *
+ * @param participants - Current durable joined roster.
+ * @param join - Incoming identity-safe join request.
+ * @returns The matching logical participant, when already joined.
+ */
+function findJoinedParticipant(
+  participants: readonly SessionParticipant[],
+  join: SessionParticipantJoin
+): SessionParticipant | undefined {
+  return participants.find((participant) =>
+    join.kind === 'Named'
+      ? participant.kind === 'Named' && participant.user.objectId === join.user.objectId
+      : participant.kind === 'Anonymous' && participant.id === join.participantId
+  );
+}
+
+/**
+ * Allocates the next unused positive anonymous alias number in current transaction state.
+ *
+ * @param participants - Current durable joined roster.
+ * @returns The lowest unused positive alias number.
+ */
+function nextAnonymousAliasNumber(participants: readonly SessionParticipant[]): number {
+  const used = new Set(
+    participants
+      .filter((participant) => participant.kind === 'Anonymous')
+      .map((participant) => Number(participant.alias.replace('Participant ', '')))
+  );
+  let candidate = 1;
+  while (used.has(candidate)) {
+    candidate += 1;
+  }
+  return candidate;
+}
+
+/**
+ * Detaches participant data from hydrated SharedTree nodes before reinsertion.
+ *
+ * @remarks SharedTree rejects inserting a node that is already parented. JSON cloning is safe for
+ * this intentionally serializable domain boundary and matches the document snapshot conversion.
+ *
+ * @param participants - Hydrated or plain participant collection.
+ * @returns Plain participant records with no SharedTree parent bindings.
+ */
+function cloneParticipants(
+  participants: readonly SessionParticipant[]
+): readonly SessionParticipant[] {
+  return JSON.parse(JSON.stringify(participants)) as readonly SessionParticipant[];
 }

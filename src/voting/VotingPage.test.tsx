@@ -30,11 +30,15 @@ const session: VotingSession = {
   updatedBy: fixtureUser
 };
 
-function createService(isHost: boolean): jest.Mocked<IVotingSessionService> {
+function createService(
+  isHost: boolean,
+  sessionState: VotingSession = session,
+  participantId = 'participant-current'
+): jest.Mocked<IVotingSessionService> {
   let document: PlanningPokerDocumentRoot = {
     ...fixtureDocument,
-    sessions: [session],
-    openSessionId: session.id
+    sessions: [sessionState],
+    openSessionId: sessionState.id
   };
   const handle: TeamDocumentHandle = {
     teamId: team.teamId,
@@ -45,6 +49,8 @@ function createService(isHost: boolean): jest.Mocked<IVotingSessionService> {
     updateStories: jest.fn(),
     updateSessions: jest.fn(),
     prepareVotingSession: jest.fn((candidate) => candidate.id),
+    joinVotingSession: jest.fn(() => undefined),
+    setVotingParticipantConnection: jest.fn(),
     waitForSaved: jest.fn(async () => undefined),
     subscribe: jest.fn(() => jest.fn()),
     dispose: jest.fn()
@@ -54,6 +60,7 @@ function createService(isHost: boolean): jest.Mocked<IVotingSessionService> {
     handle,
     isHost,
     isConfiguredMember: !isHost,
+    participantId,
     getDocument: () => document,
     getSession: () => document.sessions[0],
     getConnectionState: () => 'Connected'
@@ -65,7 +72,7 @@ function createService(isHost: boolean): jest.Mocked<IVotingSessionService> {
     startVoting: jest.fn(async (_context: VotingSessionContext) => {
       document = {
         ...document,
-        sessions: [{ ...session, status: 'Active' }]
+        sessions: [{ ...sessionState, status: 'Active' }]
       };
       return document.sessions[0];
     }),
@@ -149,6 +156,80 @@ describe('VotingPage', () => {
     expect(container.textContent).not.toContain('Start voting');
     expect(container.textContent).toContain('Copy link');
     expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it('renders named participants as personas with vote status but no vote values', async () => {
+    const namedSession: VotingSession = {
+      ...session,
+      status: 'Active',
+      participants: [
+        {
+          kind: 'Named',
+          id: 'participant-current',
+          user: fixtureUser,
+          joinedAt: fixtureDocument.createdAt,
+          presence: { connection: 'Disconnected', lastSeenAt: fixtureDocument.updatedAt }
+        }
+      ]
+    };
+    const service = createService(true, namedSession);
+
+    await act(async () => {
+      renderVoting(
+        <VotingPage
+          service={service}
+          teamId={team.teamId}
+          sessionId={session.id}
+          onOpenSession={jest.fn()}
+        />,
+        container
+      );
+    });
+
+    expect(container.textContent).toContain(fixtureUser.displayName);
+    expect(container.textContent).toContain('Not voted · Disconnected');
+    expect(container.textContent).toContain('You');
+  });
+
+  it('renders anonymous aggregate counts and only the current browser alias', async () => {
+    const anonymousSession: VotingSession = {
+      ...session,
+      settings: { ...session.settings, votingMode: 'Anonymous' },
+      participants: [
+        {
+          kind: 'Anonymous',
+          id: 'anonymous-current',
+          alias: 'Participant 1',
+          joinedAt: fixtureDocument.createdAt,
+          presence: { connection: 'Connected', lastSeenAt: fixtureDocument.updatedAt }
+        },
+        {
+          kind: 'Anonymous',
+          id: 'anonymous-other',
+          alias: 'Participant 2',
+          joinedAt: fixtureDocument.createdAt,
+          presence: { connection: 'Connected', lastSeenAt: fixtureDocument.updatedAt }
+        }
+      ]
+    };
+    const service = createService(true, anonymousSession, 'anonymous-current');
+
+    await act(async () => {
+      renderVoting(
+        <VotingPage
+          service={service}
+          teamId={team.teamId}
+          sessionId={session.id}
+          onOpenSession={jest.fn()}
+        />,
+        container
+      );
+    });
+
+    expect(container.textContent).toContain('Your session alias is Participant 1.');
+    expect(container.textContent).toContain('2 joined · 0 voted · 2 remaining');
+    expect(container.textContent).not.toContain('Participant 2');
+    expect(container.querySelector('[class*="ms-Persona"]')).toBeNull();
   });
 
   it('lets a host start the Lobby and announces the synchronized Active state', async () => {

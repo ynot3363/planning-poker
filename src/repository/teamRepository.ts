@@ -2,6 +2,7 @@ import type {
   PlanningPokerDocumentRoot,
   PlanningPokerTeam,
   PointingStory,
+  SessionParticipant,
   UserReference,
   VotingSession
 } from '../domain/planningPokerDomain';
@@ -56,6 +57,18 @@ export interface HostedTeamSummary {
   readonly activeSessionId?: string;
 }
 
+/** Identity-safe input for a participant join transaction. */
+export type SessionParticipantJoin =
+  | {
+      readonly kind: 'Named';
+      readonly participantId: string;
+      readonly user: UserReference;
+    }
+  | {
+      readonly kind: 'Anonymous';
+      readonly participantId: string;
+    };
+
 /** Owns one loaded Fluid document and its subscription lifecycle. */
 export interface TeamDocumentHandle {
   /** The stable team identifier. */
@@ -101,6 +114,34 @@ export interface TeamDocumentHandle {
    * @returns The candidate ID, or the existing open Lobby/Active session ID.
    */
   prepareVotingSession(session: VotingSession, updatedAt: string): string;
+  /**
+   * Joins or reconnects one participant inside the Fluid transaction boundary.
+   *
+   * @param sessionId - Open Lobby or Active session identifier.
+   * @param participant - Identity-safe participant join request.
+   * @param timestamp - ISO join or reconnect timestamp.
+   * @returns The durable participant selected or created by the transaction.
+   */
+  joinVotingSession(
+    sessionId: string,
+    participant: SessionParticipantJoin,
+    timestamp: string
+  ): SessionParticipant | undefined;
+  /**
+   * Updates technical participant presence without deleting durable roster or vote state.
+   *
+   * @param sessionId - Open session identifier.
+   * @param participantId - Durable session participant identifier.
+   * @param connection - Current collaboration connection state.
+   * @param timestamp - ISO presence observation timestamp.
+   * @returns `void` after the local transaction is applied.
+   */
+  setVotingParticipantConnection(
+    sessionId: string,
+    participantId: string,
+    connection: 'Connected' | 'Disconnected',
+    timestamp: string
+  ): void;
   /** @returns A promise that resolves only after Fluid acknowledges the pending mutation. */
   waitForSaved(): Promise<void>;
   /**

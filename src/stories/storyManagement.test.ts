@@ -79,6 +79,8 @@ function createHarness(document: PlanningPokerDocumentRoot = fixtureDocument): {
     }),
     updateSessions: jest.fn(),
     prepareVotingSession: jest.fn((session) => session.id),
+    joinVotingSession: jest.fn(() => undefined),
+    setVotingParticipantConnection: jest.fn(),
     waitForSaved: jest.fn(async () => undefined),
     subscribe: (listener) => {
       listeners.add(listener);

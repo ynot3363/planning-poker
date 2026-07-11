@@ -42,6 +42,8 @@ function createHandle(): TeamDocumentHandle {
       };
       return session.id;
     },
+    joinVotingSession: () => undefined,
+    setVotingParticipantConnection: jest.fn(),
     waitForSaved: async () => undefined,
     subscribe: () => jest.fn(),
     dispose: jest.fn()

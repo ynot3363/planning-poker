@@ -1,12 +1,14 @@
 import * as React from 'react';
 import { DefaultButton, PrimaryButton } from '@fluentui/react/lib/Button';
 import { MessageBar, MessageBarType } from '@fluentui/react/lib/MessageBar';
+import { Persona, PersonaSize } from '@fluentui/react/lib/Persona';
 import { TextField } from '@fluentui/react/lib/TextField';
 import type { PlanningPokerDocumentRoot, VotingSession } from '../domain/planningPokerDomain';
 import type { HostedTeamSummary } from '../repository/teamRepository';
 import { ContentCard, StatusState } from '../shell/ShellPrimitives';
 import type { IVotingSessionService, VotingSessionContext } from './sessionManagement';
 import { createSessionShareUrl } from './sessionManagement';
+import { selectParticipation } from './participation';
 import styles from './VotingPage.module.scss';
 
 /** Dependencies for the normal and focused Voting destination. */
@@ -230,6 +232,7 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
     context.team.teamId,
     session.id
   );
+  const participation = selectParticipation(session, context.participantId);
   return (
     <ContentCard label={`${context.team.title} voting session`} tone="accent">
       <div className={styles.sessionCard}>
@@ -274,6 +277,43 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
             </dd>
           </div>
         </dl>
+        <section className={styles.participation} aria-labelledby="session-participation-heading">
+          <div className={styles.participationHeader}>
+            <div>
+              <h3 id="session-participation-heading">Participants</h3>
+              {participation.mode === 'Anonymous' && participation.currentAlias !== undefined && (
+                <p>Your session alias is {participation.currentAlias}.</p>
+              )}
+            </div>
+            <p className={styles.participationCounts} aria-live="polite" aria-atomic="true">
+              {participation.counts.joined} joined · {participation.counts.voted} voted ·{' '}
+              {participation.counts.remaining} remaining
+            </p>
+          </div>
+          {participation.mode === 'Named' ? (
+            participation.rows.length === 0 ? (
+              <p>No participants have joined yet.</p>
+            ) : (
+              <ul className={styles.participantList} aria-label="Named session participants">
+                {participation.rows.map((participant) => (
+                  <li key={participant.participantId}>
+                    <Persona
+                      text={participant.displayName}
+                      secondaryText={`${participant.hasVoted ? 'Voted' : 'Not voted'} · ${participant.connection}`}
+                      size={PersonaSize.size32}
+                    />
+                    {participant.isCurrent && <span className={styles.currentBadge}>You</span>}
+                  </li>
+                ))}
+              </ul>
+            )
+          ) : (
+            <p>
+              Anonymous sessions show aggregate participation only. Other participant aliases and
+              Microsoft 365 identities are hidden.
+            </p>
+          )}
+        </section>
         {context.isHost && session.status === 'Lobby' && (
           <div className={styles.actions}>
             <PrimaryButton

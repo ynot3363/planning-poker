@@ -12,7 +12,9 @@ jest.mock('@fluidframework/odsp-client/beta', () => ({
   }
 }));
 
+import { Tree } from '@fluidframework/tree';
 import { fixtureDocument, fixtureUser } from '../domain/planningPokerFixtures';
+import type { PlanningPokerDocumentRoot, VotingSession } from '../domain/planningPokerDomain';
 import type {
   IPlanningPokerStorageConfiguration,
   ISharePointTransport
@@ -191,6 +193,37 @@ describe('OdspTeamDocumentStore', () => {
     const handle = await store.create(fixtureDocument.team, 'Example Team.fluid');
 
     expect(handle.getSnapshot()).toEqual(fixtureDocument);
+    const lobby: VotingSession = {
+      id: 'session-1',
+      teamId: fixtureDocument.team.id,
+      status: 'Lobby',
+      settings: fixtureDocument.team.settings,
+      participants: [],
+      rounds: [],
+      finalizedRoundIds: [],
+      createdAt: fixtureDocument.createdAt,
+      createdBy: fixtureUser,
+      updatedAt: fixtureDocument.updatedAt,
+      updatedBy: fixtureUser
+    };
+    const runTransaction = jest
+      .spyOn(Tree, 'runTransaction')
+      .mockImplementation((treeView, change) => {
+        change((treeView as unknown as { root: unknown }).root as never);
+        return undefined as never;
+      });
+    handle.prepareVotingSession(lobby, fixtureDocument.updatedAt);
+    const sessionsBeforeJoin = (root as PlanningPokerDocumentRoot).sessions;
+    expect(
+      handle.joinVotingSession(
+        lobby.id,
+        { kind: 'Named', participantId: 'participant-1', user: fixtureUser },
+        fixtureDocument.updatedAt
+      )
+    ).toMatchObject({ id: 'participant-1', kind: 'Named' });
+    expect((root as PlanningPokerDocumentRoot).sessions).toBe(sessionsBeforeJoin);
+    expect(handle.getSnapshot().sessions[0].participants).toHaveLength(1);
+    runTransaction.mockRestore();
     await expect(handle.waitForSaved()).resolves.toBeUndefined();
     await store.updateMetadata({
       ...fixtureDocument,
@@ -238,12 +271,18 @@ describe('OdspTeamDocumentStore', () => {
     };
     let root: unknown = fixtureDocument;
     let connectionState = 1;
+    let canView = false;
     const view = {
-      compatibility: { canInitialize: false, canView: true },
+      get compatibility(): { canInitialize: boolean; canView: boolean; canUpgrade: boolean } {
+        return { canInitialize: false, canView, canUpgrade: true };
+      },
       get root(): unknown {
         return root;
       },
       initialize: jest.fn(),
+      upgradeSchema: jest.fn(() => {
+        canView = true;
+      }),
       dispose: jest.fn()
     };
     const listeners = new Map<string, () => void>();
@@ -287,6 +326,7 @@ describe('OdspTeamDocumentStore', () => {
       sessions: [expect.objectContaining({ id: openSession.id })]
     });
     expect(container.off).toHaveBeenCalledWith('connected', expect.any(Function));
+    expect(view.upgradeSchema).toHaveBeenCalledTimes(1);
     handle.dispose();
   });
 

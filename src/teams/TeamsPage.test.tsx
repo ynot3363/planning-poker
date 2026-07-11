@@ -31,6 +31,8 @@ function createHandle(): TeamDocumentHandle {
     updateStories: jest.fn(),
     updateSessions: jest.fn(),
     prepareVotingSession: jest.fn((session) => session.id),
+    joinVotingSession: jest.fn(() => undefined),
+    setVotingParticipantConnection: jest.fn(),
     waitForSaved: async () => undefined,
     subscribe: () => jest.fn(),
     dispose: jest.fn()

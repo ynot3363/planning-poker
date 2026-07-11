@@ -1,6 +1,7 @@
 import type {
   ConnectionState,
   PlanningPokerDocumentRoot,
+  SessionParticipant,
   UserReference,
   VotingSession
 } from '../domain/planningPokerDomain';
@@ -41,6 +42,7 @@ export interface VotingSessionContext {
   readonly handle: TeamDocumentHandle;
   readonly isHost: boolean;
   readonly isConfiguredMember: boolean;
+  readonly participantId?: string;
   getDocument(): PlanningPokerDocumentRoot;
   getSession(): VotingSession;
   getConnectionState(): ConnectionState;
@@ -54,6 +56,13 @@ export interface IVotingSessionService {
   startVoting(context: VotingSessionContext): Promise<VotingSession>;
   subscribe(context: VotingSessionContext, listener: () => void): () => void;
   closeSession(context: VotingSessionContext): void;
+}
+
+/** Minimal browser-session storage surface used for anonymous reconnect state. */
+export interface IParticipantSessionStorage {
+  getItem(key: string): string | undefined;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
 }
 
 /**
@@ -86,12 +95,14 @@ export class VotingSessionService implements IVotingSessionService {
    * @param currentUser - Current delegated user.
    * @param createId - Opaque identifier generator.
    * @param now - ISO timestamp provider.
+   * @param participantStorage - Optional browser-session adapter for anonymous reconnect state.
    */
   public constructor(
     private readonly repository: TeamRepository,
     private readonly currentUser: UserReference,
     private readonly createId: () => string,
-    private readonly now: () => string
+    private readonly now: () => string,
+    private readonly participantStorage?: IParticipantSessionStorage
   ) {}
 
   /** @inheritdoc */
@@ -136,9 +147,10 @@ export class VotingSessionService implements IVotingSessionService {
         rounds: [],
         finalizedRoundIds: [],
         createdAt: timestamp,
-        createdBy: this.currentUser,
         updatedAt: timestamp,
-        updatedBy: this.currentUser
+        ...(document.team.settings.votingMode === 'Named'
+          ? { createdBy: this.currentUser, updatedBy: this.currentUser }
+          : {})
       };
       handle.prepareVotingSession(session, timestamp);
       await handle.waitForSaved();
@@ -174,6 +186,7 @@ export class VotingSessionService implements IVotingSessionService {
           );
         }
         if (session.status === 'Ended') {
+          this.clearAnonymousReconnectState(teamId, session);
           throw new VotingSessionError('ended-session', 'This voting session has ended.');
         }
         if (document.openSessionId !== sessionId) {
@@ -182,7 +195,9 @@ export class VotingSessionService implements IVotingSessionService {
             'This voting session is no longer available.'
           );
         }
-        return this.createContext(team, handle, sessionId);
+        const participant = this.joinParticipant(handle, session, teamId);
+        await handle.waitForSaved();
+        return this.createContext(team, handle, sessionId, participant.id);
       } catch (error: unknown) {
         handle.dispose();
         throw error;
@@ -216,7 +231,7 @@ export class VotingSessionService implements IVotingSessionService {
       ...current,
       status: 'Active',
       updatedAt: timestamp,
-      updatedBy: this.currentUser
+      ...(current.settings.votingMode === 'Named' ? { updatedBy: this.currentUser } : {})
     };
     context.handle.updateSessions(
       document.sessions.map((session) => (session.id === started.id ? started : session)),
@@ -234,7 +249,28 @@ export class VotingSessionService implements IVotingSessionService {
 
   /** @inheritdoc */
   public subscribe(context: VotingSessionContext, listener: () => void): () => void {
-    return context.handle.subscribe(listener);
+    return context.handle.subscribe(() => {
+      const session = context.getSession();
+      if (session.status === 'Ended') {
+        this.clearAnonymousReconnectState(context.team.teamId, session);
+      }
+      const participantId = context.participantId;
+      if (participantId !== undefined) {
+        const participant = context
+          .getSession()
+          .participants.find((candidate) => candidate.id === participantId);
+        const connection = context.handle.getConnectionState();
+        if (participant !== undefined && participant.presence.connection !== connection) {
+          context.handle.setVotingParticipantConnection(
+            context.getSession().id,
+            participantId,
+            connection,
+            this.now()
+          );
+        }
+      }
+      listener();
+    });
   }
 
   /** @inheritdoc */
@@ -248,12 +284,14 @@ export class VotingSessionService implements IVotingSessionService {
    * @param team - Accessible SharePoint discovery summary.
    * @param handle - Owned live Fluid handle.
    * @param sessionId - Verified open session identifier.
+   * @param participantId - Current browser's joined participant, when available.
    * @returns A synchronized session context.
    */
   private createContext(
     team: HostedTeamSummary,
     handle: TeamDocumentHandle,
-    sessionId: string
+    sessionId: string,
+    participantId?: string
   ): VotingSessionContext {
     const getDocument = (): PlanningPokerDocumentRoot => handle.getSnapshot();
     const getSession = (): VotingSession => {
@@ -274,10 +312,160 @@ export class VotingSessionService implements IVotingSessionService {
       isConfiguredMember: document.team.configuredMembers.some(
         (member) => member.objectId === this.currentUser.objectId
       ),
+      participantId,
       getDocument,
       getSession,
       getConnectionState: () => handle.getConnectionState()
     };
+  }
+
+  /**
+   * Joins the current user according to the immutable session privacy snapshot.
+   *
+   * @param handle - Live Fluid document handle.
+   * @param session - Verified Lobby or Active session.
+   * @param teamId - Stable team identifier used only to scope local reconnect state.
+   * @returns The durable participant selected by the join transaction.
+   */
+  private joinParticipant(
+    handle: TeamDocumentHandle,
+    session: VotingSession,
+    teamId: string
+  ): SessionParticipant {
+    const timestamp = this.now();
+    if (session.settings.votingMode === 'Named') {
+      const participant = handle.joinVotingSession(
+        session.id,
+        { kind: 'Named', participantId: this.createId(), user: this.currentUser },
+        timestamp
+      );
+      if (participant === undefined) {
+        throw new VotingSessionError('invalid-session', 'This voting session is no longer open.');
+      }
+      return participant;
+    }
+    const storage = this.getParticipantStorage();
+    const storageKey = this.getAnonymousStorageKey(teamId, session.id);
+    const savedParticipantId = this.loadAnonymousParticipantId(storage, storageKey);
+    const participantId = savedParticipantId ?? this.createId();
+    const participant = handle.joinVotingSession(
+      session.id,
+      { kind: 'Anonymous', participantId },
+      timestamp
+    );
+    if (participant === undefined) {
+      throw new VotingSessionError('invalid-session', 'This voting session is no longer open.');
+    }
+    if (savedParticipantId === undefined) {
+      this.saveAnonymousParticipantId(storage, storageKey, participant.id);
+    }
+    return participant;
+  }
+
+  /** @returns Browser session storage when available and permitted. */
+  private getParticipantStorage(): IParticipantSessionStorage | undefined {
+    if (this.participantStorage !== undefined) {
+      return this.participantStorage;
+    }
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+    return {
+      getItem: (key) => window.sessionStorage.getItem(key) ?? undefined,
+      setItem: (key, value) => window.sessionStorage.setItem(key, value),
+      removeItem: (key) => window.sessionStorage.removeItem(key)
+    };
+  }
+
+  /**
+   * @param teamId - Stable opaque team identifier.
+   * @param sessionId - Stable opaque session identifier.
+   * @returns A browser-local key containing opaque team and session IDs only.
+   */
+  private getAnonymousStorageKey(teamId: string, sessionId: string): string {
+    return `planningPoker:anonymous:${teamId}:${sessionId}`;
+  }
+
+  /**
+   * Reads reconnect state while treating unavailable browser storage as an ordinary new join.
+   *
+   * @param storage - Optional browser-session adapter.
+   * @param storageKey - Opaque session-scoped storage key.
+   * @returns The prior participant ID, when valid and readable.
+   */
+  private loadAnonymousParticipantId(
+    storage: IParticipantSessionStorage | undefined,
+    storageKey: string
+  ): string | undefined {
+    try {
+      return this.readAnonymousParticipantId(storage?.getItem(storageKey));
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Saves an opaque reconnect record without failing a successful collaborative join.
+   *
+   * @param storage - Optional browser-session adapter.
+   * @param storageKey - Opaque session-scoped storage key.
+   * @param participantId - Anonymous shared participant identifier.
+   * @returns `void` after storage succeeds or is safely unavailable.
+   */
+  private saveAnonymousParticipantId(
+    storage: IParticipantSessionStorage | undefined,
+    storageKey: string,
+    participantId: string
+  ): void {
+    try {
+      storage?.setItem(
+        storageKey,
+        JSON.stringify({ reconnectToken: this.createId(), participantId })
+      );
+    } catch {
+      // The participant remains joined; only same-tab alias reclamation is unavailable.
+    }
+  }
+
+  /**
+   * Clears browser-local anonymous reconnect state after authoritative session completion.
+   *
+   * @param teamId - Stable opaque team identifier.
+   * @param session - Authoritative ended session snapshot.
+   * @returns `void` after state is removed or browser storage is safely unavailable.
+   */
+  private clearAnonymousReconnectState(teamId: string, session: VotingSession): void {
+    if (session.settings.votingMode !== 'Anonymous' || session.status !== 'Ended') {
+      return;
+    }
+    try {
+      this.getParticipantStorage()?.removeItem(this.getAnonymousStorageKey(teamId, session.id));
+    } catch {
+      // Ending remains authoritative even when browser storage cannot be modified.
+    }
+  }
+
+  /**
+   * Parses only the opaque participant identifier from untrusted browser state.
+   *
+   * @param value - Serialized reconnect record.
+   * @returns A participant ID, or `undefined` for absent or malformed state.
+   */
+  private readAnonymousParticipantId(value: string | undefined): string | undefined {
+    if (value === undefined) {
+      return undefined;
+    }
+    try {
+      const parsed = JSON.parse(value) as { participantId?: unknown; reconnectToken?: unknown };
+      return typeof parsed.participantId === 'string' &&
+        parsed.participantId.trim().length > 0 &&
+        typeof parsed.reconnectToken === 'string' &&
+        parsed.reconnectToken.trim().length > 0
+        ? parsed.participantId
+        : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /**

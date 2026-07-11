@@ -1,5 +1,9 @@
 import { fixtureDocument, fixtureUser } from '../domain/planningPokerFixtures';
-import type { PlanningPokerDocumentRoot, UserReference } from '../domain/planningPokerDomain';
+import type {
+  PlanningPokerDocumentRoot,
+  SessionParticipant,
+  UserReference
+} from '../domain/planningPokerDomain';
 import type { IPlanningPokerStorageConfiguration } from '../storage/storageTypes';
 import { TeamRepository } from '../repository/teamRepository';
 import type {
@@ -7,6 +11,7 @@ import type {
   ITeamDocumentStore,
   TeamDocumentHandle
 } from '../repository/teamRepository';
+import type { IParticipantSessionStorage } from './sessionManagement';
 import { createSessionShareUrl, VotingSessionService } from './sessionManagement';
 
 const storage: IPlanningPokerStorageConfiguration = {
@@ -30,7 +35,9 @@ const summary: HostedTeamSummary = {
 
 function createHarness(
   initial: PlanningPokerDocumentRoot = fixtureDocument,
-  user: UserReference = fixtureUser
+  user: UserReference = fixtureUser,
+  participantStorage?: IParticipantSessionStorage,
+  createId: () => string = () => 'session-new'
 ): {
   readonly service: VotingSessionService;
   readonly handle: TeamDocumentHandle;
@@ -68,6 +75,77 @@ function createHarness(
       listeners.forEach((listener) => listener());
       return candidate.id;
     }),
+    joinVotingSession: jest.fn((sessionId, join, timestamp) => {
+      const session = document.sessions.find((candidate) => candidate.id === sessionId);
+      if (session === undefined || session.status === 'Ended') {
+        return undefined;
+      }
+      const existing = session.participants.find((participant) =>
+        join.kind === 'Named'
+          ? participant.kind === 'Named' && participant.user.objectId === join.user.objectId
+          : participant.kind === 'Anonymous' && participant.id === join.participantId
+      );
+      let selected: SessionParticipant;
+      if (existing !== undefined) {
+        selected = {
+          ...existing,
+          presence: { connection: 'Connected', lastSeenAt: timestamp }
+        };
+      } else if (join.kind === 'Named') {
+        selected = {
+          kind: 'Named',
+          id: join.participantId,
+          user: join.user,
+          joinedAt: timestamp,
+          presence: { connection: 'Connected', lastSeenAt: timestamp }
+        };
+      } else {
+        const aliases = session.participants.filter(
+          (participant) => participant.kind === 'Anonymous'
+        ).length;
+        selected = {
+          kind: 'Anonymous',
+          id: join.participantId,
+          alias: `Participant ${aliases + 1}`,
+          joinedAt: timestamp,
+          presence: { connection: 'Connected', lastSeenAt: timestamp }
+        };
+      }
+      const participants =
+        existing === undefined
+          ? [...session.participants, selected]
+          : session.participants.map((participant) =>
+              participant.id === existing.id ? selected : participant
+            );
+      document = {
+        ...document,
+        sessions: document.sessions.map((candidate) =>
+          candidate.id === session.id
+            ? { ...candidate, participants, updatedAt: timestamp }
+            : candidate
+        ),
+        updatedAt: timestamp
+      };
+      listeners.forEach((listener) => listener());
+      return selected;
+    }),
+    setVotingParticipantConnection: jest.fn((sessionId, participantId, connection, timestamp) => {
+      document = {
+        ...document,
+        sessions: document.sessions.map((session) =>
+          session.id === sessionId
+            ? {
+                ...session,
+                participants: session.participants.map((participant) =>
+                  participant.id === participantId
+                    ? { ...participant, presence: { connection, lastSeenAt: timestamp } }
+                    : participant
+                )
+              }
+            : session
+        )
+      };
+    }),
     waitForSaved: jest.fn(async () => undefined),
     subscribe: (listener) => {
       listeners.add(listener);
@@ -88,8 +166,9 @@ function createHarness(
     service: new VotingSessionService(
       new TeamRepository(storage, store),
       user,
-      () => 'session-new',
-      () => '2026-07-11T12:30:00.000Z'
+      createId,
+      () => '2026-07-11T12:30:00.000Z',
+      participantStorage
     ),
     handle,
     store,
@@ -155,6 +234,84 @@ describe('VotingSessionService', () => {
     expect(context.isHost).toBe(false);
     expect(context.isConfiguredMember).toBe(false);
     expect(context.getSession().status).toBe('Lobby');
+    expect(context.getSession().participants).toEqual([
+      expect.objectContaining({ kind: 'Named', user: guest })
+    ]);
+  });
+
+  it('deduplicates named joins by stable Entra object ID', async () => {
+    const hostHarness = createHarness();
+    const prepared = await hostHarness.service.prepareSession(summary);
+
+    const first = await hostHarness.service.joinSession(summary.teamId, prepared.getSession().id);
+    const second = await hostHarness.service.joinSession(summary.teamId, prepared.getSession().id);
+
+    expect(first.participantId).toBe(second.participantId);
+    expect(second.getSession().participants).toHaveLength(1);
+  });
+
+  it('reclaims an anonymous alias from browser-session state without persisting identity', async () => {
+    const values = new Map<string, string>();
+    const browserStorage: IParticipantSessionStorage = {
+      getItem: (key) => values.get(key),
+      setItem: (key, value) => values.set(key, value),
+      removeItem: (key) => values.delete(key)
+    };
+    const anonymousDocument: PlanningPokerDocumentRoot = {
+      ...fixtureDocument,
+      team: {
+        ...fixtureDocument.team,
+        settings: { ...fixtureDocument.team.settings, votingMode: 'Anonymous' }
+      }
+    };
+    const harness = createHarness(anonymousDocument, fixtureUser, browserStorage);
+    const prepared = await harness.service.prepareSession(summary);
+
+    const first = await harness.service.joinSession(summary.teamId, prepared.getSession().id);
+    const second = await harness.service.joinSession(summary.teamId, prepared.getSession().id);
+
+    expect(first.participantId).toBe(second.participantId);
+    expect(second.getSession().participants).toEqual([
+      expect.objectContaining({ kind: 'Anonymous', alias: 'Participant 1' })
+    ]);
+    expect(JSON.stringify(second.getSession())).not.toContain(fixtureUser.objectId);
+    expect(JSON.stringify(second.getSession())).not.toContain(fixtureUser.loginName);
+  });
+
+  it('allocates unique sequential aliases when anonymous clients join concurrently', async () => {
+    const anonymousDocument: PlanningPokerDocumentRoot = {
+      ...fixtureDocument,
+      team: {
+        ...fixtureDocument.team,
+        settings: { ...fixtureDocument.team.settings, votingMode: 'Anonymous' }
+      }
+    };
+    let firstId = 0;
+    const first = createHarness(
+      anonymousDocument,
+      fixtureUser,
+      { getItem: () => undefined, setItem: jest.fn(), removeItem: jest.fn() },
+      () => `first-${(firstId += 1)}`
+    );
+    const prepared = await first.service.prepareSession(summary);
+    let secondId = 0;
+    const secondService = new VotingSessionService(
+      new TeamRepository(storage, first.store),
+      { ...fixtureUser, objectId: 'second-user' },
+      () => `second-${(secondId += 1)}`,
+      () => '2026-07-11T12:30:00.000Z',
+      { getItem: () => undefined, setItem: jest.fn(), removeItem: jest.fn() }
+    );
+
+    await Promise.all([
+      first.service.joinSession(summary.teamId, prepared.getSession().id),
+      secondService.joinSession(summary.teamId, prepared.getSession().id)
+    ]);
+
+    expect(prepared.getSession().participants).toEqual([
+      expect.objectContaining({ alias: 'Participant 1' }),
+      expect.objectContaining({ alias: 'Participant 2' })
+    ]);
   });
 
   it('starts voting once and treats a repeated start as idempotent', async () => {
@@ -218,6 +375,41 @@ describe('VotingSessionService', () => {
     await expect(
       harness.service.joinSession(fixtureDocument.team.id, 'session-new')
     ).rejects.toMatchObject({ code: 'ended-session' });
+  });
+
+  it('clears browser-local anonymous reconnect state when an ended session is resolved', async () => {
+    const values = new Map<string, string>();
+    const storageKey = `planningPoker:anonymous:${fixtureDocument.team.id}:session-ended`;
+    values.set(
+      storageKey,
+      JSON.stringify({ reconnectToken: 'local-token', participantId: 'anonymous-1' })
+    );
+    const browserStorage: IParticipantSessionStorage = {
+      getItem: (key) => values.get(key),
+      setItem: (key, value) => values.set(key, value),
+      removeItem: (key) => values.delete(key)
+    };
+    const endedSession = {
+      id: 'session-ended',
+      teamId: fixtureDocument.team.id,
+      status: 'Ended' as const,
+      settings: { ...fixtureDocument.team.settings, votingMode: 'Anonymous' as const },
+      participants: [],
+      rounds: [],
+      finalizedRoundIds: [],
+      createdAt: fixtureDocument.createdAt,
+      updatedAt: fixtureDocument.updatedAt
+    };
+    const harness = createHarness(
+      { ...fixtureDocument, sessions: [endedSession] },
+      fixtureUser,
+      browserStorage
+    );
+
+    await expect(
+      harness.service.joinSession(fixtureDocument.team.id, endedSession.id)
+    ).rejects.toMatchObject({ code: 'ended-session' });
+    expect(values.has(storageKey)).toBe(false);
   });
 });
 

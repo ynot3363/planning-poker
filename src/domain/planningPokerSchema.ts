@@ -144,9 +144,9 @@ export const SessionSchema: TreeNodeSchema = factory.object('VotingSession', {
   endedAt: factory.optional(factory.string),
   endedBy: factory.optional(UserReferenceSchema),
   createdAt: factory.string,
-  createdBy: UserReferenceSchema,
+  createdBy: factory.optional(UserReferenceSchema),
   updatedAt: factory.string,
-  updatedBy: UserReferenceSchema
+  updatedBy: factory.optional(UserReferenceSchema)
 });
 
 /** Root SharedTree schema stored in each Planning Poker Fluid container. */

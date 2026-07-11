@@ -219,7 +219,7 @@ export interface StoryVotingRound {
 }
 
 /** Represents a collaborative voting session for a team. */
-export interface VotingSession extends AuditFields {
+export interface VotingSession {
   /** The stable session identifier. */
   readonly id: string;
   /** The owning team identifier. */
@@ -240,6 +240,14 @@ export interface VotingSession extends AuditFields {
   readonly endedAt?: string;
   /** The user who ended the session. */
   readonly endedBy?: UserReference;
+  /** The ISO timestamp at which the session was created. */
+  readonly createdAt: string;
+  /** The creating host in Named mode; omitted from Anonymous session state. */
+  readonly createdBy?: UserReference;
+  /** The ISO timestamp of the latest session update. */
+  readonly updatedAt: string;
+  /** The updating host in Named mode; omitted from Anonymous session state. */
+  readonly updatedBy?: UserReference;
 }
 
 /** Defines the serializable root state stored in one Fluid container. */

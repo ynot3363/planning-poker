@@ -85,6 +85,56 @@
   margin: 4px 0 0;
 }
 
+.participation {
+  border-block-start: 1px solid '[theme:neutralLight, default: #edebe9]';
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-block-start: 16px;
+}
+
+.participation h3,
+.participation p {
+  margin: 0;
+}
+
+.participationHeader {
+  align-items: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.participationCounts {
+  color: '[theme:neutralSecondary, default: #605e5c]';
+}
+
+.participantList {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.participantList li {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.currentBadge {
+  background: '[theme:themeLighter, default: #deecf9]';
+  border-radius: 10px;
+  color: '[theme:themeDark, default: #005a9e]';
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+}
+
 .shareLink {
   flex: 1 1 480px;
   max-inline-size: 760px;
