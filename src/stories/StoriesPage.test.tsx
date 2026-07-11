@@ -119,12 +119,20 @@ function createService(
       return () => listeners.delete(listener);
     }),
     createStory: jest.fn(async (_session: StoryTeamSession, _values: StoryFormValues) => success()),
+    importStories: jest.fn(
+      async (_session: StoryTeamSession, _values: readonly StoryFormValues[]) => success()
+    ),
     editStory: jest.fn(
       async (_session: StoryTeamSession, _storyId: string, _values: StoryFormValues) => success()
     ),
     archiveStory: jest.fn(async (_session, storyId) => changeStatus(storyId, 'Archived')),
     restoreStory: jest.fn(async (_session, storyId) => changeStatus(storyId, 'Ready')),
-    repointStory: jest.fn(async (_session, storyId) => changeStatus(storyId, 'Ready'))
+    repointStory: jest.fn(async (_session, storyId) => changeStatus(storyId, 'Ready')),
+    deleteStory: jest.fn(async (_session, storyId): Promise<StoryMutationResult> => {
+      document = { ...document, stories: document.stories.filter((story) => story.id !== storyId) };
+      publish();
+      return { isSaved: true };
+    })
   };
   return { service, session, getDocument: () => document };
 }
@@ -204,6 +212,20 @@ describe('StoriesPage', () => {
     expect(container.textContent).toContain('Archived (1)');
     expect(container.textContent).toContain('Ready backlog item');
     expect(container.textContent).toContain(formatStoryTimestamp(readyStory.createdAt));
+    const createObjectUrl = jest.fn(() => 'blob:story-template');
+    const revokeObjectUrl = jest.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectUrl });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectUrl });
+    const anchorClick = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation();
+    act(() => {
+      Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent?.includes('Download template'))
+        ?.click();
+    });
+    expect(createObjectUrl).toHaveBeenCalledWith(expect.any(Blob));
+    expect(anchorClick).toHaveBeenCalledTimes(1);
+    expect(revokeObjectUrl).toHaveBeenCalledWith('blob:story-template');
+    anchorClick.mockRestore();
     const link = container.querySelector<HTMLAnchorElement>(
       'a[href="https://example.com/work/ready"]'
     );
@@ -394,7 +416,49 @@ describe('StoriesPage', () => {
     const archive = Array.from(container.querySelectorAll('button')).find(
       (button) => button.textContent?.trim() === 'Archive'
     );
+    const deleteButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Delete'
+    );
     expect(edit?.disabled).toBe(true);
     expect(archive?.disabled).toBe(true);
+    expect(deleteButton?.disabled).toBe(true);
+  });
+
+  it('requires confirmation before permanently deleting a story', async () => {
+    const harness = createService();
+    await act(async () => {
+      renderPage(
+        <StoriesPage
+          currentUser={fixtureUser}
+          service={harness.service}
+          selectedTeamId={summary.teamId}
+          onSelectTeam={jest.fn()}
+          onNavigateTeams={jest.fn()}
+        />,
+        container
+      );
+      await settle();
+    });
+    const deleteButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Delete'
+    );
+    act(() => deleteButton?.click());
+    expect(document.body.textContent).toContain('Delete Ready backlog item?');
+    expect(document.body.textContent).toContain('complete estimate history');
+    expect(harness.service.deleteStory).not.toHaveBeenCalled();
+
+    await act(async () => {
+      Array.from(document.body.querySelectorAll('button'))
+        .find((button) => button.textContent?.trim() === 'Delete story')
+        ?.click();
+      await settle();
+    });
+    expect(harness.service.deleteStory).toHaveBeenCalledWith(harness.session, readyStory.id);
+    expect(
+      Array.from(container.querySelectorAll('h2')).some(
+        (heading) => heading.textContent === 'Ready backlog item'
+      )
+    ).toBe(false);
+    expect(container.textContent).toContain('Ready backlog item was deleted.');
   });
 });

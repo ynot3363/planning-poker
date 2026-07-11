@@ -123,7 +123,9 @@ function AboutView(): React.ReactElement {
         <p>
           Hosts create or import stories and organize them as Ready, Pointed, or Archived. Restoring
           an archived story or returning a pointed story to Ready keeps its estimate history. Only
-          Ready stories can enter a new voting round.
+          Ready stories can enter a new voting round. Hosts can download the CSV template, preview a
+          completed file locally, and confirm one all-or-nothing bulk import. Archive preserves a
+          story history, while Delete permanently removes it after confirmation.
         </p>
       </ContentCard>
       <ContentCard label="Named and anonymous voting">

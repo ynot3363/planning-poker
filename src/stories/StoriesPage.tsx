@@ -14,6 +14,8 @@ import type {
 import type { HostedTeamSummary } from '../repository/teamRepository';
 import { ContentCard, StatusState } from '../shell/ShellPrimitives';
 import { StoryFormPanel } from './StoryFormPanel';
+import { StoryCsvImportPanel } from './StoryCsvImportPanel';
+import { createStoryCsvTemplate } from './storyCsvImport';
 import {
   createInitialStoryForm,
   createStoryFormFromStory,
@@ -56,10 +58,15 @@ export function StoriesPage(props: IStoriesPageProps): React.ReactElement {
   const [editorStory, setEditorStory] = React.useState<PointingStory>();
   const [editorValues, setEditorValues] = React.useState(() => createInitialStoryForm());
   const [isEditorOpen, setIsEditorOpen] = React.useState(false);
+  const [isImportOpen, setIsImportOpen] = React.useState(false);
   const [archiveTarget, setArchiveTarget] = React.useState<PointingStory>();
+  const [deleteTarget, setDeleteTarget] = React.useState<PointingStory>();
   const [message, setMessage] = React.useState<string>();
+  const [successMessage, setSuccessMessage] = React.useState<string>();
   const [busyStoryId, setBusyStoryId] = React.useState<string>();
   const defaultedTeamId = React.useRef<string>();
+  const addStoryButtonRef = React.useRef<HTMLButtonElement>(null);
+  const deleteTriggerRef = React.useRef<HTMLButtonElement>();
 
   React.useEffect(() => {
     let isCurrent = true;
@@ -141,12 +148,14 @@ export function StoriesPage(props: IStoriesPageProps): React.ReactElement {
     setEditorStory(undefined);
     setEditorValues(createInitialStoryForm());
     setMessage(undefined);
+    setSuccessMessage(undefined);
     setIsEditorOpen(true);
   };
   const openEdit = (story: PointingStory): void => {
     setEditorStory(story);
     setEditorValues(createStoryFormFromStory(story));
     setMessage(undefined);
+    setSuccessMessage(undefined);
     setIsEditorOpen(true);
   };
   const dismissEditor = (): void => {
@@ -197,6 +206,60 @@ export function StoriesPage(props: IStoriesPageProps): React.ReactElement {
     setBusyStoryId(undefined);
   };
 
+  const openDeleteConfirmation = (story: PointingStory, trigger: HTMLButtonElement): void => {
+    deleteTriggerRef.current = trigger;
+    setMessage(undefined);
+    setSuccessMessage(undefined);
+    setDeleteTarget(story);
+  };
+
+  const cancelDelete = (): void => {
+    setDeleteTarget(undefined);
+    window.setTimeout(() => deleteTriggerRef.current?.focus(), 0);
+  };
+
+  const confirmDelete = async (): Promise<void> => {
+    if (session === undefined || deleteTarget === undefined) {
+      return;
+    }
+    setBusyStoryId(deleteTarget.id);
+    setMessage(undefined);
+    const result = await props.service.deleteStory(session, deleteTarget.id);
+    if (result.isSaved) {
+      const deletedTitle = deleteTarget.title;
+      setDocument(session.getDocument());
+      setDeleteTarget(undefined);
+      setSuccessMessage(`${deletedTitle} was deleted.`);
+      window.setTimeout(() => addStoryButtonRef.current?.focus(), 0);
+    } else {
+      setMessage(result.message ?? 'The story could not be deleted. Try again.');
+    }
+    setBusyStoryId(undefined);
+  };
+
+  const importStories = (values: readonly StoryFormValues[]): Promise<StoryMutationResult> => {
+    if (session === undefined) {
+      return Promise.resolve({
+        isSaved: false,
+        fieldErrors: {},
+        code: 'save-failure',
+        message: 'Select a hosted team before importing stories.'
+      });
+    }
+    return props.service.importStories(session, values);
+  };
+
+  const downloadTemplate = (): void => {
+    const url = URL.createObjectURL(
+      new Blob([createStoryCsvTemplate()], { type: 'text/csv;charset=utf-8' })
+    );
+    const anchor = window.document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'planning-poker-story-import-template.csv';
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
   const teamOptions: IDropdownOption[] = teams.map((team) => ({
     key: team.teamId,
     text: team.title
@@ -242,17 +305,39 @@ export function StoriesPage(props: IStoriesPageProps): React.ReactElement {
             props.onSelectTeam(option === undefined ? undefined : String(option.key))
           }
         />
-        <PrimaryButton
-          iconProps={{ iconName: 'Add' }}
-          disabled={session === undefined || loadState !== 'ready'}
-          onClick={openAdd}
-        >
-          Add story
-        </PrimaryButton>
+        <div className={styles.commandActions}>
+          <DefaultButton
+            iconProps={{ iconName: 'Download' }}
+            disabled={session === undefined || loadState !== 'ready'}
+            onClick={downloadTemplate}
+          >
+            Download template
+          </DefaultButton>
+          <DefaultButton
+            iconProps={{ iconName: 'Upload' }}
+            disabled={session === undefined || loadState !== 'ready'}
+            onClick={() => setIsImportOpen(true)}
+          >
+            Upload CSV
+          </DefaultButton>
+          <PrimaryButton
+            elementRef={addStoryButtonRef}
+            iconProps={{ iconName: 'Add' }}
+            disabled={session === undefined || loadState !== 'ready'}
+            onClick={openAdd}
+          >
+            Add story
+          </PrimaryButton>
+        </div>
       </div>
       {message !== undefined && (
         <MessageBar messageBarType={MessageBarType.error} delayedRender={false}>
           {message}
+        </MessageBar>
+      )}
+      {successMessage !== undefined && (
+        <MessageBar messageBarType={MessageBarType.success} delayedRender={false}>
+          {successMessage}
         </MessageBar>
       )}
       {loadState === 'select-team' && (
@@ -363,6 +448,15 @@ export function StoriesPage(props: IStoriesPageProps): React.ReactElement {
                               Re-point
                             </DefaultButton>
                           )}
+                          <DefaultButton
+                            className={styles.deleteAction}
+                            disabled={isBlocked || busyStoryId === story.id}
+                            onClick={(event) =>
+                              openDeleteConfirmation(story, event.currentTarget as HTMLButtonElement)
+                            }
+                          >
+                            Delete
+                          </DefaultButton>
                         </div>
                       </article>
                     </ContentCard>
@@ -381,6 +475,21 @@ export function StoriesPage(props: IStoriesPageProps): React.ReactElement {
         panelLayerHostId={props.panelLayerHostId}
         onSave={saveStory}
         onDismiss={dismissEditor}
+      />
+      <StoryCsvImportPanel
+        isOpen={isImportOpen}
+        panelLayerHostId={props.panelLayerHostId}
+        onImport={importStories}
+        onImported={(count) => {
+          if (session !== undefined) {
+            setDocument(session.getDocument());
+          }
+          setStatus('Ready');
+          setIsImportOpen(false);
+          setMessage(undefined);
+          setSuccessMessage(`${count} ${count === 1 ? 'story was' : 'stories were'} imported.`);
+        }}
+        onDismiss={() => setIsImportOpen(false)}
       />
       {archiveTarget !== undefined && (
         <Dialog
@@ -405,6 +514,33 @@ export function StoriesPage(props: IStoriesPageProps): React.ReactElement {
               disabled={busyStoryId === archiveTarget.id}
               onClick={() => setArchiveTarget(undefined)}
             >
+              Cancel
+            </DefaultButton>
+          </DialogFooter>
+        </Dialog>
+      )}
+      {deleteTarget !== undefined && (
+        <Dialog
+          hidden={false}
+          dialogContentProps={{
+            type: DialogType.normal,
+            title: `Delete ${deleteTarget.title}?`,
+            closeButtonAriaLabel: 'Close delete confirmation',
+            subText:
+              'This permanently removes the story, its current estimate, and its complete estimate history. Archive the story instead if that history should be retained.'
+          }}
+          modalProps={{ isBlocking: true }}
+          onDismiss={busyStoryId === deleteTarget.id ? undefined : cancelDelete}
+        >
+          <DialogFooter>
+            <PrimaryButton
+              className={styles.confirmDeleteAction}
+              disabled={busyStoryId === deleteTarget.id}
+              onClick={confirmDelete}
+            >
+              {busyStoryId === deleteTarget.id ? 'Deleting...' : 'Delete story'}
+            </PrimaryButton>
+            <DefaultButton disabled={busyStoryId === deleteTarget.id} onClick={cancelDelete}>
               Cancel
             </DefaultButton>
           </DialogFooter>

@@ -72,10 +72,10 @@ function createHarness(document: PlanningPokerDocumentRoot = fixtureDocument): {
       current = { ...current, team, updatedAt: team.updatedAt };
       listeners.forEach((listener) => listener());
     },
-    updateStories: (stories, updatedAt) => {
+    updateStories: jest.fn((stories, updatedAt) => {
       current = { ...current, stories, updatedAt };
       listeners.forEach((listener) => listener());
-    },
+    }),
     waitForSaved: jest.fn(async () => undefined),
     subscribe: (listener) => {
       listeners.add(listener);
@@ -98,11 +98,15 @@ function createHarness(document: PlanningPokerDocumentRoot = fixtureDocument): {
     recycle: jest.fn(async () => ({})),
     updateMetadata: jest.fn(async () => undefined)
   };
+  let nextStoryId = 0;
   return {
     service: new StoryManagementService(
       new TeamRepository(storage, store),
       fixtureUser,
-      () => 'story-new',
+      () => {
+        nextStoryId++;
+        return nextStoryId === 1 ? 'story-new' : `story-new-${nextStoryId}`;
+      },
       () => '2026-07-10T03:00:00.000Z'
     ),
     store,
@@ -198,6 +202,23 @@ describe('story management', () => {
     });
   });
 
+  it('permanently deletes a story in one durable transaction', async () => {
+    const harness = createHarness({ ...fixtureDocument, stories: [readyStory, pointedStory] });
+    const session = await harness.service.openTeam((await harness.service.listTeams())[0]);
+
+    await expect(harness.service.deleteStory(session, pointedStory.id)).resolves.toEqual({
+      isSaved: true
+    });
+
+    expect(harness.getDocument().stories).toEqual([readyStory]);
+    expect(session.handle.updateStories).toHaveBeenCalledTimes(1);
+    expect(session.handle.waitForSaved).toHaveBeenCalledTimes(1);
+    await expect(harness.service.deleteStory(session, 'missing-story')).resolves.toMatchObject({
+      isSaved: false,
+      code: 'not-found'
+    });
+  });
+
   it('returns only Ready stories to voting consumers', () => {
     const archived = { ...readyStory, id: 'story-archived', status: 'Archived' as const };
     expect(selectVotingEligibleStories([readyStory, pointedStory, archived])).toEqual([readyStory]);
@@ -251,6 +272,10 @@ describe('story management', () => {
       isSaved: false,
       code: 'active-round'
     });
+    await expect(harness.service.deleteStory(session, readyStory.id)).resolves.toMatchObject({
+      isSaved: false,
+      code: 'active-round'
+    });
     expect(session.handle.waitForSaved).not.toHaveBeenCalled();
   });
 
@@ -268,5 +293,75 @@ describe('story management', () => {
       expect.objectContaining({ stories: [expect.objectContaining({ status: 'Archived' })] })
     );
     unsubscribe();
+  });
+
+  it('imports every valid row with common audit fields in one transaction', async () => {
+    const harness = createHarness();
+    const session = await harness.service.openTeam((await harness.service.listTeams())[0]);
+
+    await expect(
+      harness.service.importStories(session, [
+        { title: 'First', description: 'One', link: '' },
+        { title: 'Second', description: 'Two', link: '/sites/team/two' }
+      ])
+    ).resolves.toEqual({ isSaved: true });
+
+    expect(session.handle.updateStories).toHaveBeenCalledTimes(1);
+    expect(session.handle.waitForSaved).toHaveBeenCalledTimes(1);
+    expect(harness.store.updateMetadata).toHaveBeenCalledTimes(1);
+    expect(harness.getDocument().stories).toEqual([
+      expect.objectContaining({
+        title: 'First',
+        status: 'Ready',
+        createdAt: '2026-07-10T03:00:00.000Z'
+      }),
+      expect.objectContaining({
+        title: 'Second',
+        status: 'Ready',
+        createdAt: '2026-07-10T03:00:00.000Z'
+      })
+    ]);
+  });
+
+  it('does not mutate the document when any imported row or ID generation fails', async () => {
+    const invalidHarness = createHarness();
+    const invalidSession = await invalidHarness.service.openTeam(
+      (await invalidHarness.service.listTeams())[0]
+    );
+    await expect(
+      invalidHarness.service.importStories(invalidSession, [
+        { title: '', description: '', link: '' }
+      ])
+    ).resolves.toMatchObject({ isSaved: false });
+    expect(invalidSession.handle.updateStories).not.toHaveBeenCalled();
+
+    const failingHarness = createHarness();
+    const failingService = new StoryManagementService(
+      new TeamRepository(storage, failingHarness.store),
+      fixtureUser,
+      () => {
+        throw new Error('ID unavailable');
+      },
+      () => '2026-07-10T03:00:00.000Z'
+    );
+    const failingSession = await failingService.openTeam((await failingService.listTeams())[0]);
+    await expect(
+      failingService.importStories(failingSession, [{ title: 'Valid', description: '', link: '' }])
+    ).resolves.toMatchObject({ isSaved: false });
+    expect(failingSession.handle.updateStories).not.toHaveBeenCalled();
+
+    const mutationHarness = createHarness();
+    const mutationSession = await mutationHarness.service.openTeam(
+      (await mutationHarness.service.listTeams())[0]
+    );
+    (mutationSession.handle.updateStories as jest.Mock).mockImplementation(() => {
+      throw new Error('transaction failed');
+    });
+    await expect(
+      mutationHarness.service.importStories(mutationSession, [
+        { title: 'Valid', description: '', link: '' }
+      ])
+    ).resolves.toMatchObject({ isSaved: false });
+    expect(mutationHarness.getDocument().stories).toEqual([]);
   });
 });

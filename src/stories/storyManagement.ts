@@ -63,12 +63,19 @@ export interface IStoryManagementService {
     storyId: string,
     values: StoryFormValues
   ): Promise<StoryMutationResult>;
+  /** Atomically creates a validated collection of Ready stories. */
+  importStories(
+    session: StoryTeamSession,
+    values: readonly StoryFormValues[]
+  ): Promise<StoryMutationResult>;
   /** Archives one Ready or Pointed story after UI confirmation. */
   archiveStory(session: StoryTeamSession, storyId: string): Promise<StoryMutationResult>;
   /** Restores one Archived story to Ready. */
   restoreStory(session: StoryTeamSession, storyId: string): Promise<StoryMutationResult>;
   /** Returns one Pointed story to Ready without erasing estimate history. */
   repointStory(session: StoryTeamSession, storyId: string): Promise<StoryMutationResult>;
+  /** Permanently removes one story that is not used by an unfinished round. */
+  deleteStory(session: StoryTeamSession, storyId: string): Promise<StoryMutationResult>;
 }
 
 /** @returns Empty form values for a new story. */
@@ -264,6 +271,46 @@ export class StoryManagementService implements IStoryManagementService {
   }
 
   /** @inheritdoc */
+  public importStories(
+    session: StoryTeamSession,
+    values: readonly StoryFormValues[]
+  ): Promise<StoryMutationResult> {
+    if (values.length === 0) {
+      return Promise.resolve(
+        this.failure('save-failure', 'The CSV file does not contain any stories to import.')
+      );
+    }
+    if (values.some((value) => Object.keys(validateStoryForm(value)).length > 0)) {
+      return Promise.resolve(
+        this.failure('save-failure', 'Resolve every CSV validation error before importing.')
+      );
+    }
+    const timestamp = this.now();
+    try {
+      const imported = values.map((value): PointingStory => {
+        const link = normalizeStoryLink(value.link).link;
+        return {
+          id: this.createId(),
+          title: value.title.trim(),
+          description: value.description.trim(),
+          ...(link === undefined ? {} : { link }),
+          status: 'Ready',
+          estimateHistory: [],
+          createdAt: timestamp,
+          createdBy: this.currentUser,
+          updatedAt: timestamp,
+          updatedBy: this.currentUser
+        };
+      });
+      return this.persist(session, [...session.getDocument().stories, ...imported]);
+    } catch {
+      return Promise.resolve(
+        this.failure('save-failure', 'No stories were imported. Review the file and try again.')
+      );
+    }
+  }
+
+  /** @inheritdoc */
   public archiveStory(session: StoryTeamSession, storyId: string): Promise<StoryMutationResult> {
     return this.transition(session, storyId, 'Archived', ['Ready', 'Pointed']);
   }
@@ -276,6 +323,21 @@ export class StoryManagementService implements IStoryManagementService {
   /** @inheritdoc */
   public repointStory(session: StoryTeamSession, storyId: string): Promise<StoryMutationResult> {
     return this.transition(session, storyId, 'Ready', ['Pointed']);
+  }
+
+  /** @inheritdoc */
+  public deleteStory(session: StoryTeamSession, storyId: string): Promise<StoryMutationResult> {
+    const document = session.getDocument();
+    if (!document.stories.some((story) => story.id === storyId)) {
+      return Promise.resolve(this.failure('not-found', 'The story could not be found.'));
+    }
+    if (isStoryInOpenRound(document, storyId)) {
+      return Promise.resolve(this.activeRoundFailure());
+    }
+    return this.persist(
+      session,
+      document.stories.filter((story) => story.id !== storyId)
+    );
   }
 
   /**

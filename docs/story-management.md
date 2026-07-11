@@ -44,7 +44,35 @@ Pointed, and Archived pivot shows its count and an explanatory empty state when
 no stories match. Archive requires confirmation because it removes a story from
 the active backlog, while restore and re-point remain explicit labeled actions.
 
+Delete is a separate permanent action available in every lifecycle state. Its
+confirmation explains that the story content, current estimate, and estimate
+history will be removed. Delete is blocked while the story belongs to an
+unfinished round; use Archive whenever historical estimation records should be
+retained.
+
 Story mutations run through Fluid transactions, wait for ODSP save
 acknowledgement, and publish synchronized snapshots to other open clients.
 SharePoint metadata remains a team-discovery index and does not duplicate the
 story catalog.
+
+## CSV Import
+
+Select a hosted team and choose **Download template** to create an Excel-friendly
+UTF-8 CSV containing the supported header. Add as many as 1,000 story rows, save
+the file as `.csv`, replace or remove the clearly marked example row, choose
+**Upload CSV**, review every row, and confirm the import. The file remains in the
+browser and is never sent to an external parser.
+
+| Column      | Required value | Default | Validation                                      |
+| ----------- | -------------- | ------- | ----------------------------------------------- |
+| Title       | Yes            | None    | Same required-title rule as Add Story           |
+| Description | No             | Blank   | Imported and rendered as inert plain text       |
+| Link        | No             | Blank   | HTTPS or SharePoint-relative path beginning `/` |
+
+The header must contain only `Title`, `Description`, and `Link`; matching is
+trimmed and case-insensitive. Files may include a UTF-8 BOM, quoted commas,
+escaped quotes, and quoted multiline descriptions. Blank rows are ignored.
+Uploads are limited to 5 MB and 1,000 nonblank rows. Exact duplicate rows receive
+a warning, while duplicate titles remain valid. Any invalid row disables import.
+One confirmation creates all previewed stories as Ready with a common Added On
+time and the current host as Added By, or creates none.

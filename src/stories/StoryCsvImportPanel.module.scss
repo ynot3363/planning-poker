@@ -1,0 +1,51 @@
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.body p,
+.body ul {
+  margin: 0;
+}
+
+.fileLabel {
+  font-weight: 600;
+  margin-block-end: -10px;
+}
+
+.summary,
+.footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.summary span {
+  background: '[theme:neutralLighter, default: #f3f2f1]';
+  border-radius: 10px;
+  padding: 4px 10px;
+}
+
+.tableRegion {
+  max-block-size: 420px;
+  overflow: auto;
+}
+
+.tableRegion table {
+  border-collapse: collapse;
+  inline-size: 100%;
+  min-inline-size: 720px;
+}
+
+.tableRegion th,
+.tableRegion td {
+  border-block-end: 1px solid '[theme:neutralLight, default: #edebe9]';
+  padding: 8px;
+  text-align: start;
+  vertical-align: top;
+}
+
+.tableRegion th {
+  font-weight: 600;
+}
