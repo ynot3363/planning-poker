@@ -68,6 +68,7 @@ function createHarness(document: PlanningPokerDocumentRoot = fixtureDocument): {
     teamId: document.team.id,
     driveItemId: 'item-id',
     getSnapshot: () => current,
+    getConnectionState: () => 'Connected',
     updateTeam: (team) => {
       current = { ...current, team, updatedAt: team.updatedAt };
       listeners.forEach((listener) => listener());
@@ -76,6 +77,8 @@ function createHarness(document: PlanningPokerDocumentRoot = fixtureDocument): {
       current = { ...current, stories, updatedAt };
       listeners.forEach((listener) => listener());
     }),
+    updateSessions: jest.fn(),
+    prepareVotingSession: jest.fn((session) => session.id),
     waitForSaved: jest.fn(async () => undefined),
     subscribe: (listener) => {
       listeners.add(listener);

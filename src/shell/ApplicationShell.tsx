@@ -19,6 +19,8 @@ import type { ITeamManagementService } from '../teams/teamManagementService';
 import type { IPlanningPokerPeopleService } from '../teams/sharePointPeopleService';
 import { StoriesPage } from '../stories/StoriesPage';
 import type { IStoryManagementService } from '../stories/storyManagement';
+import { VotingPage } from '../voting/VotingPage';
+import type { IVotingSessionService } from '../voting/sessionManagement';
 import styles from './ApplicationShell.module.scss';
 
 initializeIcons();
@@ -59,6 +61,8 @@ export interface IApplicationShellProps {
     readonly peopleService: IPlanningPokerPeopleService;
     /** Hosted story-catalog workflow service. */
     readonly storyService: IStoryManagementService;
+    /** Synchronized session-entry workflow service. */
+    readonly votingService: IVotingSessionService;
   };
   /** Safe initialization error when authenticated team services are unavailable. */
   readonly teamManagementError?: string;
@@ -193,14 +197,26 @@ function ShellView(
     return <AboutView />;
   }
   if (props.route.view === 'Voting' && props.route.focusedVoting) {
+    if (props.teamManagement !== undefined) {
+      return (
+        <VotingPage
+          service={props.teamManagement.votingService}
+          teamId={props.route.teamId}
+          sessionId={props.route.sessionId}
+          onOpenSession={(teamId, sessionId) =>
+            props.onNavigate({ view: 'Voting', teamId, sessionId, focusedVoting: true })
+          }
+        />
+      );
+    }
     return (
-      <ContentCard label="Focused voting session" tone="accent">
-        <h2>Voting session</h2>
-        <p>
-          The focused session route is ready for the synchronized voting experience. Team and
-          session data will be loaded by the voting workflow.
-        </p>
-      </ContentCard>
+      <StatusState
+        kind="error"
+        title="Voting could not be initialized"
+        description={
+          props.teamManagementError ?? 'Verify the collaboration connection and reload the page.'
+        }
+      />
     );
   }
   if (props.route.view === 'Stories') {
@@ -229,10 +245,23 @@ function ShellView(
     );
   }
   if (props.route.view === 'Voting') {
+    if (props.teamManagement !== undefined) {
+      return (
+        <VotingPage
+          service={props.teamManagement.votingService}
+          onOpenSession={(teamId, sessionId) =>
+            props.onNavigate({ view: 'Voting', teamId, sessionId, focusedVoting: true })
+          }
+        />
+      );
+    }
     return (
-      <FeaturePlaceholder
-        title="No voting session open"
-        description="Open a shareable session link from a host to enter focused voting."
+      <StatusState
+        kind="error"
+        title="Voting could not be initialized"
+        description={
+          props.teamManagementError ?? 'Verify the collaboration connection and reload the page.'
+        }
       />
     );
   }

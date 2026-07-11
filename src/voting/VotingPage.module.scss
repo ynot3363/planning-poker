@@ -1,0 +1,105 @@
+.teamList {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.teamList > li,
+.teamCard {
+  display: flex;
+  min-inline-size: 0;
+}
+
+.teamList > li > section {
+  display: flex;
+  flex: 1 1 auto;
+}
+
+.teamCard {
+  block-size: 100%;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 12px;
+  min-inline-size: 0;
+}
+
+.teamCard h2,
+.teamCard p,
+.sessionCard h2,
+.sessionCard p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-block-start: auto;
+}
+
+.sessionCard {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.sessionHeader {
+  align-items: flex-start;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.statusBadge {
+  background: '[theme:neutralLighter, default: #f3f2f1]';
+  border-radius: 10px;
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+}
+
+.details {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.details div {
+  border-block-start: 1px solid '[theme:neutralLight, default: #edebe9]';
+  padding-block-start: 8px;
+}
+
+.details dt {
+  color: '[theme:neutralSecondary, default: #605e5c]';
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.details dd {
+  margin: 4px 0 0;
+}
+
+.shareLink {
+  flex: 1 1 480px;
+  max-inline-size: 760px;
+}
+
+.shareLinkRow {
+  align-items: flex-end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+@media (max-width: 720px) {
+  .teamList,
+  .details {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

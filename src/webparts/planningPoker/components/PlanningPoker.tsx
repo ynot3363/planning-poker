@@ -16,6 +16,7 @@ import type { UserReference } from '../../../domain/planningPokerDomain';
 import type { ITeamManagementService } from '../../../teams/teamManagementService';
 import type { IPlanningPokerPeopleService } from '../../../teams/sharePointPeopleService';
 import type { IStoryManagementService } from '../../../stories/storyManagement';
+import type { IVotingSessionService } from '../../../voting/sessionManagement';
 import styles from './PlanningPoker.module.scss';
 import { PlanningPokerThemeProvider } from './PlanningPokerTheme';
 
@@ -74,6 +75,7 @@ export interface IPlanningPokerProps {
     readonly service: ITeamManagementService;
     readonly peopleService: IPlanningPokerPeopleService;
     readonly storyService: IStoryManagementService;
+    readonly votingService: IVotingSessionService;
   };
   /** Safe team-service initialization failure for the Teams destination. */
   readonly teamManagementError?: string;

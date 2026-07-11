@@ -13,7 +13,8 @@ import type {
   PlanningPokerDocumentRoot,
   PlanningPokerTeam,
   PointingStory,
-  UserReference
+  UserReference,
+  VotingSession
 } from '../domain/planningPokerDomain';
 import { PlanningPokerDocumentRootSchema } from '../domain/planningPokerSchema';
 import type {
@@ -26,7 +27,11 @@ import type { HostedTeamSummary, ITeamDocumentStore, TeamDocumentHandle } from '
 
 const MIN_FLUID_VERSION = '2.111.0' as const;
 const SAVE_TIMEOUT_MS = 15_000;
+const CONNECTION_TIMEOUT_MS = 15_000;
 const INITIAL_OBJECT_KEY = 'appTree';
+const FLUID_DISCONNECTED_STATE = 0;
+// Fluid's public ConnectionState enum represents Connected as 2 in this pinned runtime.
+const FLUID_CONNECTED_STATE = 2;
 const containerSchema = { initialObjects: { [INITIAL_OBJECT_KEY]: SharedTree } } as const;
 const treeConfiguration = new TreeViewConfiguration({
   schema: PlanningPokerDocumentRootSchema,
@@ -54,6 +59,7 @@ interface ITeamItemRecord {
   readonly teamId: string;
   readonly title: string;
   readonly isActive: boolean;
+  readonly activeSessionId?: string;
   readonly hostIds: readonly number[];
   readonly driveItemId?: string;
 }
@@ -71,6 +77,8 @@ interface ITreeRootView {
 interface IMutableDocumentRoot {
   team: PlanningPokerTeam;
   stories: readonly PointingStory[];
+  sessions: readonly VotingSession[];
+  openSessionId?: string;
   updatedAt: string;
 }
 
@@ -176,6 +184,13 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
         containerSchema,
         MIN_FLUID_VERSION
       );
+      try {
+        await this.waitForConnected(container);
+      } catch (error: unknown) {
+        services.dispose();
+        container.dispose();
+        throw error;
+      }
       const view = container.initialObjects.appTree.viewWith(treeConfiguration);
       const untypedView = view as unknown as ITreeRootView;
       if (!untypedView.compatibility.canView) {
@@ -290,6 +305,8 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
       teamId,
       driveItemId,
       getSnapshot: () => this.readSnapshot(untypedView),
+      getConnectionState: () =>
+        container.connectionState === FLUID_CONNECTED_STATE ? 'Connected' : 'Disconnected',
       updateTeam: (team) => {
         Tree.runTransaction(view, (root) => {
           const document = root as unknown as IMutableDocumentRoot;
@@ -304,15 +321,46 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
           document.updatedAt = updatedAt;
         });
       },
+      updateSessions: (sessions, openSessionId, updatedAt) => {
+        Tree.runTransaction(view, (root) => {
+          const document = root as unknown as IMutableDocumentRoot;
+          document.sessions = sessions;
+          document.openSessionId = openSessionId;
+          document.updatedAt = updatedAt;
+        });
+      },
+      prepareVotingSession: (session, updatedAt) => {
+        let selectedSessionId = session.id;
+        Tree.runTransaction(view, (root) => {
+          const document = root as unknown as IMutableDocumentRoot;
+          const existing = document.sessions.find(
+            (candidate) =>
+              candidate.id === document.openSessionId &&
+              (candidate.status === 'Lobby' || candidate.status === 'Active')
+          );
+          if (existing !== undefined) {
+            selectedSessionId = existing.id;
+            return;
+          }
+          document.sessions = [...document.sessions, session];
+          document.openSessionId = session.id;
+          document.updatedAt = updatedAt;
+        });
+        return selectedSessionId;
+      },
       waitForSaved: () => this.waitForSaved(container),
       subscribe: (listener) => {
         const root = untypedView.root as TreeNode;
         let isSubscribed = true;
         const unsubscribe = Tree.on(root, 'treeChanged', listener);
+        container.on('connected', listener);
+        container.on('disconnected', listener);
         return (): void => {
           if (isSubscribed) {
             isSubscribed = false;
             unsubscribe();
+            container.off('connected', listener);
+            container.off('disconnected', listener);
           }
         };
       },
@@ -362,6 +410,76 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
   }
 
   /**
+   * Waits until a newly loaded container has processed remote operations before reading its tree.
+   *
+   * @param container - Loaded Fluid container that may still be catching up.
+   * @returns A promise that resolves after Fluid reports the connected state.
+   */
+  private async waitForConnected(
+    container: IFluidContainer<typeof containerSchema>
+  ): Promise<void> {
+    if (container.connectionState === FLUID_CONNECTED_STATE) {
+      return;
+    }
+    await new Promise<void>((resolve, reject) => {
+      let isSettled = false;
+      const listenerState: {
+        timeoutId?: number;
+        handleConnected: () => void;
+        handleDisposed: () => void;
+      } = {
+        handleConnected: () => undefined,
+        handleDisposed: () => undefined
+      };
+      const cleanup = (): void => {
+        if (listenerState.timeoutId !== undefined) {
+          window.clearTimeout(listenerState.timeoutId);
+        }
+        container.off('connected', listenerState.handleConnected);
+        container.off('disposed', listenerState.handleDisposed);
+      };
+      listenerState.handleConnected = (): void => {
+        if (!isSettled) {
+          isSettled = true;
+          cleanup();
+          resolve();
+        }
+      };
+      listenerState.handleDisposed = (): void => {
+        if (!isSettled) {
+          isSettled = true;
+          cleanup();
+          reject(
+            new TeamRepositoryError(
+              'disconnected',
+              'The team could not connect to SharePoint collaboration services.'
+            )
+          );
+        }
+      };
+      listenerState.timeoutId = window.setTimeout(() => {
+        if (!isSettled) {
+          isSettled = true;
+          cleanup();
+          reject(
+            new TeamRepositoryError(
+              'disconnected',
+              'The team could not catch up with SharePoint collaboration services.'
+            )
+          );
+        }
+      }, CONNECTION_TIMEOUT_MS);
+      container.on('connected', listenerState.handleConnected);
+      container.on('disposed', listenerState.handleDisposed);
+      if (container.connectionState === FLUID_CONNECTED_STATE) {
+        listenerState.handleConnected();
+      } else if (container.connectionState === FLUID_DISCONNECTED_STATE) {
+        container.connect();
+      }
+    });
+  }
+
+  /**
    * @param view - Live tree view.
    * @returns A detached serializable document snapshot.
    */
@@ -396,7 +514,7 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
     const response = await this.transport.get<unknown>(
       `${this.listPath()}/items?$select=Id,Title,File/Name,${this.field('Team ID')},${this.field(
         'Is Active'
-      )},${hostField}/Id&$expand=File,${hostField}`
+      )},${this.field('Active Session ID')},${hostField}/Id&$expand=File,${hostField}`
     );
     return this.unwrapResults(response)
       .map((value) => this.parseTeamItem(value))
@@ -433,6 +551,7 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
       teamId,
       title,
       isActive: Boolean(item[this.field('Is Active')]),
+      activeSessionId: this.readString(item[this.field('Active Session ID')]),
       hostIds: this.readPersonIds(item[this.field('Hosts')]),
       driveItemId: this.attachedFiles.get(teamId)?.driveItemId
     };
@@ -449,7 +568,8 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
         teamId: record.teamId,
         driveItemId,
         title: record.title,
-        isActive: record.isActive
+        isActive: record.isActive,
+        activeSessionId: record.activeSessionId
       };
     } catch {
       return undefined;

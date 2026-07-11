@@ -2,7 +2,8 @@ import type {
   PlanningPokerDocumentRoot,
   PlanningPokerTeam,
   PointingStory,
-  UserReference
+  UserReference,
+  VotingSession
 } from '../domain/planningPokerDomain';
 import type { IPlanningPokerStorageConfiguration } from '../storage/storageTypes';
 
@@ -51,6 +52,8 @@ export interface HostedTeamSummary {
   readonly title: string;
   /** Whether the team is available for current work. */
   readonly isActive: boolean;
+  /** Current lobby or active session projected into SharePoint discovery metadata. */
+  readonly activeSessionId?: string;
 }
 
 /** Owns one loaded Fluid document and its subscription lifecycle. */
@@ -61,6 +64,8 @@ export interface TeamDocumentHandle {
   readonly driveItemId: string;
   /** @returns A plain serializable snapshot of the current shared state. */
   getSnapshot(): PlanningPokerDocumentRoot;
+  /** @returns The current collaboration connection state. */
+  getConnectionState(): 'Connected' | 'Disconnected';
   /**
    * Applies one team mutation through the store's Fluid transaction boundary.
    *
@@ -76,6 +81,26 @@ export interface TeamDocumentHandle {
    * @returns `void` after the local transaction is applied.
    */
   updateStories(stories: readonly PointingStory[], updatedAt: string): void;
+  /**
+   * Replaces session state and its single-open-session pointer in one Fluid transaction.
+   *
+   * @param sessions - Complete ordered session collection.
+   * @param openSessionId - The single Lobby or Active session, when present.
+   * @param updatedAt - ISO timestamp for document Last Activity.
+   */
+  updateSessions(
+    sessions: readonly VotingSession[],
+    openSessionId: string | undefined,
+    updatedAt: string
+  ): void;
+  /**
+   * Creates a Lobby only when the transaction observes no existing open session.
+   *
+   * @param session - Candidate Lobby with an immutable identifier and settings snapshot.
+   * @param updatedAt - ISO timestamp for document Last Activity when creation wins.
+   * @returns The candidate ID, or the existing open Lobby/Active session ID.
+   */
+  prepareVotingSession(session: VotingSession, updatedAt: string): string;
   /** @returns A promise that resolves only after Fluid acknowledges the pending mutation. */
   waitForSaved(): Promise<void>;
   /**
@@ -224,6 +249,31 @@ export class TeamRepository {
   public async listHostedTeams(currentUser: UserReference): Promise<readonly HostedTeamSummary[]> {
     this.requireStorage();
     return this.store.listHostedBy(currentUser);
+  }
+
+  /** @returns All team summaries the delegated user can access through SharePoint. */
+  public async listAccessibleTeams(): Promise<readonly HostedTeamSummary[]> {
+    this.requireStorage();
+    return this.store.list();
+  }
+
+  /**
+   * Resolves one opaque team identifier without relying on a mutable file title.
+   *
+   * @param teamId - Stable team identifier from a validated application route.
+   * @returns The accessible discovery summary.
+   */
+  public async findAccessibleTeam(teamId: string): Promise<HostedTeamSummary> {
+    const team = (await this.listAccessibleTeams()).find(
+      (candidate) => candidate.teamId === teamId
+    );
+    if (team === undefined) {
+      throw new TeamRepositoryError(
+        'not-found',
+        'The team could not be found or is not accessible.'
+      );
+    }
+    return team;
   }
 
   /**

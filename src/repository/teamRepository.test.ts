@@ -28,11 +28,24 @@ function createHandle(document: PlanningPokerDocumentRoot = fixtureDocument): Te
     teamId: document.team.id,
     driveItemId: 'item-id',
     getSnapshot: jest.fn(() => snapshot),
+    getConnectionState: () => 'Connected',
     updateTeam: jest.fn((team: PlanningPokerTeam) => {
       snapshot = { ...snapshot, team, updatedAt: team.updatedAt };
     }),
     updateStories: jest.fn((stories, updatedAt) => {
       snapshot = { ...snapshot, stories, updatedAt };
+    }),
+    updateSessions: jest.fn((sessions, openSessionId, updatedAt) => {
+      snapshot = { ...snapshot, sessions, openSessionId, updatedAt };
+    }),
+    prepareVotingSession: jest.fn((session, updatedAt) => {
+      snapshot = {
+        ...snapshot,
+        sessions: [...snapshot.sessions, session],
+        openSessionId: session.id,
+        updatedAt
+      };
+      return session.id;
     }),
     waitForSaved: jest.fn(async () => undefined),
     subscribe: jest.fn(() => jest.fn()),

@@ -82,11 +82,14 @@ function createService(
     teamId: document.team.id,
     driveItemId: summary.driveItemId,
     getSnapshot: () => document,
+    getConnectionState: () => 'Connected',
     updateTeam: jest.fn(),
     updateStories: (stories, updatedAt) => {
       document = { ...document, stories, updatedAt };
       publish();
     },
+    updateSessions: jest.fn(),
+    prepareVotingSession: jest.fn((session) => session.id),
     waitForSaved: jest.fn(async () => undefined),
     subscribe: jest.fn(() => jest.fn()),
     dispose: jest.fn()

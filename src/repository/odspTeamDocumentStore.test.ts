@@ -1,8 +1,13 @@
 const mockCreateContainer = jest.fn();
+const mockGetContainer = jest.fn();
 jest.mock('@fluidframework/odsp-client/beta', () => ({
   OdspClient: class OdspClient {
     public createContainer(...args: unknown[]): Promise<unknown> {
       return mockCreateContainer(...args) as Promise<unknown>;
+    }
+
+    public getContainer(...args: unknown[]): Promise<unknown> {
+      return mockGetContainer(...args) as Promise<unknown>;
     }
   }
 }));
@@ -215,6 +220,74 @@ describe('OdspTeamDocumentStore', () => {
     expect(view.dispose).toHaveBeenCalledTimes(1);
     expect(services.dispose).toHaveBeenCalledTimes(1);
     expect(container.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for a loaded container to catch up before reading session state', async () => {
+    const openSession = {
+      id: 'session-current',
+      teamId: fixtureDocument.team.id,
+      status: 'Lobby' as const,
+      settings: fixtureDocument.team.settings,
+      participants: [],
+      rounds: [],
+      finalizedRoundIds: [],
+      createdAt: fixtureDocument.createdAt,
+      createdBy: fixtureUser,
+      updatedAt: fixtureDocument.updatedAt,
+      updatedBy: fixtureUser
+    };
+    let root: unknown = fixtureDocument;
+    let connectionState = 1;
+    const view = {
+      compatibility: { canInitialize: false, canView: true },
+      get root(): unknown {
+        return root;
+      },
+      initialize: jest.fn(),
+      dispose: jest.fn()
+    };
+    const listeners = new Map<string, () => void>();
+    const container = {
+      initialObjects: { appTree: { viewWith: jest.fn(() => view) } },
+      get connectionState(): number {
+        return connectionState;
+      },
+      isDirty: false,
+      connect: jest.fn(),
+      on: jest.fn((event: string, listener: () => void) => {
+        listeners.set(event, listener);
+      }),
+      off: jest.fn((event: string) => {
+        listeners.delete(event);
+      }),
+      dispose: jest.fn()
+    };
+    const services = { dispose: jest.fn() };
+    mockGetContainer.mockResolvedValueOnce({ container, services });
+    const store = new OdspTeamDocumentStore(
+      storage,
+      createTransport(async () => ({ value: [] })),
+      createDriveService(),
+      tokenProvider
+    );
+    const loading = store.load('drive-item-id');
+    await Promise.resolve();
+    root = {
+      ...fixtureDocument,
+      sessions: [openSession],
+      openSessionId: openSession.id
+    };
+    connectionState = 2;
+    listeners.get('connected')?.();
+
+    const handle = await loading;
+
+    expect(handle.getSnapshot()).toMatchObject({
+      openSessionId: openSession.id,
+      sessions: [expect.objectContaining({ id: openSession.id })]
+    });
+    expect(container.off).toHaveBeenCalledWith('connected', expect.any(Function));
+    handle.dispose();
   });
 
   it('normalizes recycle access denial and unknown failures', async () => {

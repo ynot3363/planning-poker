@@ -23,11 +23,24 @@ function createHandle(): TeamDocumentHandle {
     teamId: fixtureDocument.team.id,
     driveItemId: 'item-id',
     getSnapshot: () => snapshot,
+    getConnectionState: () => 'Connected',
     updateTeam: (team) => {
       snapshot = { ...snapshot, team, updatedAt: team.updatedAt };
     },
     updateStories: (stories, updatedAt) => {
       snapshot = { ...snapshot, stories, updatedAt };
+    },
+    updateSessions: (sessions, openSessionId, updatedAt) => {
+      snapshot = { ...snapshot, sessions, openSessionId, updatedAt };
+    },
+    prepareVotingSession: (session, updatedAt) => {
+      snapshot = {
+        ...snapshot,
+        sessions: [...snapshot.sessions, session],
+        openSessionId: session.id,
+        updatedAt
+      };
+      return session.id;
     },
     waitForSaved: async () => undefined,
     subscribe: () => jest.fn(),
