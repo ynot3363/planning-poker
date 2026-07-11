@@ -4,6 +4,7 @@ import type { ServiceScope } from '@microsoft/sp-core-library';
 import { ActionButton, DefaultButton, IconButton } from '@fluentui/react/lib/Button';
 import { initializeIcons } from '@fluentui/react/lib/Icons';
 import { MessageBar, MessageBarType } from '@fluentui/react/lib/MessageBar';
+import { LayerHost } from '@fluentui/react/lib/Layer';
 import { TooltipHost } from '@fluentui/react/lib/Tooltip';
 import type {
   IPlanningPokerRoute,
@@ -12,9 +13,17 @@ import type {
 } from './planningPokerRoute';
 import { ContentCard, PageHeading, StatusState } from './ShellPrimitives';
 import { LivePersona } from './LivePersona';
+import { TeamsPage } from '../teams/TeamsPage';
+import type { UserReference } from '../domain/planningPokerDomain';
+import type { ITeamManagementService } from '../teams/teamManagementService';
+import type { IPlanningPokerPeopleService } from '../teams/sharePointPeopleService';
+import { StoriesPage } from '../stories/StoriesPage';
+import type { IStoryManagementService } from '../stories/storyManagement';
 import styles from './ApplicationShell.module.scss';
 
 initializeIcons();
+
+let nextShellLayerId = 0;
 
 /** Identifies the current user without treating display data as authorization. */
 export interface IPlanningPokerCurrentUser {
@@ -40,6 +49,19 @@ export interface IApplicationShellProps {
   readonly currentUser: IPlanningPokerCurrentUser;
   /** SPFx service scope consumed by Microsoft 365 host components. */
   readonly serviceScope: ServiceScope;
+  /** Team administration dependencies when the host has initialized US-005 services. */
+  readonly teamManagement?: {
+    /** Stable current identity used for host checks and defaults. */
+    readonly currentUser: UserReference;
+    /** Hosted-team workflow service. */
+    readonly service: ITeamManagementService;
+    /** SharePoint people resolver used by team forms. */
+    readonly peopleService: IPlanningPokerPeopleService;
+    /** Hosted story-catalog workflow service. */
+    readonly storyService: IStoryManagementService;
+  };
+  /** Safe initialization error when authenticated team services are unavailable. */
+  readonly teamManagementError?: string;
   /** Optional reason route values fell back safely. */
   readonly routeNotice?: PlanningPokerRouteNotice;
   /** Selects a validated application route. */
@@ -99,9 +121,12 @@ function AboutView(): React.ReactElement {
       <ContentCard label="Stories and sessions">
         <h2>Stories and sessions</h2>
         <p>
-          Hosts create or import stories, organize their lifecycle, and start one shareable voting
-          session for a team. Authenticated site users join through the session link without leaving
-          the SharePoint or Teams context.
+          Hosts create or import stories and organize them as Ready, Pointed, or Archived. Restoring
+          an archived story or returning a pointed story to Ready keeps its estimate history. Only
+          Ready stories can enter a new voting round. Hosts can download the CSV template, preview a
+          completed file locally, and confirm one all-or-nothing bulk import. Archive preserves a
+          story history, while Delete permanently removes it after confirmation. Export all stories
+          downloads the current catalog and estimates without votes or participant details.
         </p>
       </ContentCard>
       <ContentCard label="Named and anonymous voting">
@@ -128,6 +153,22 @@ function AboutView(): React.ReactElement {
           behavior, not a substitute for SharePoint authorization.
         </p>
       </ContentCard>
+      <ContentCard label="Team configuration">
+        <h2>Team configuration</h2>
+        <p>
+          A team needs a valid SharePoint file title and at least one host. Configured members are
+          the expected roster, but they do not prevent another authenticated site user from joining
+          through a session link.
+        </p>
+      </ContentCard>
+      <ContentCard label="Scales, timer, and activity">
+        <h2>Scales, timer, and activity</h2>
+        <p>
+          Choose the fixed Fibonacci or T-shirt scale, or arrange two to twenty unique custom values
+          such as 1, 2, 4, and 8. The optional timer supports 1 to 60 minutes. Inactive teams remain
+          editable but cannot start new voting sessions.
+        </p>
+      </ContentCard>
       <ContentCard label="Action guidance">
         <h2>Action guidance</h2>
         <p>
@@ -145,7 +186,9 @@ function AboutView(): React.ReactElement {
  * @param props - Validated shell state and callbacks.
  * @returns The content for the selected destination.
  */
-function ShellView(props: IApplicationShellProps): React.ReactElement {
+function ShellView(
+  props: IApplicationShellProps & { readonly panelLayerHostId: string }
+): React.ReactElement {
   if (props.route.view === 'About') {
     return <AboutView />;
   }
@@ -161,10 +204,27 @@ function ShellView(props: IApplicationShellProps): React.ReactElement {
     );
   }
   if (props.route.view === 'Stories') {
+    if (props.teamManagement !== undefined) {
+      return (
+        <StoriesPage
+          currentUser={props.teamManagement.currentUser}
+          service={props.teamManagement.storyService}
+          selectedTeamId={props.route.teamId}
+          panelLayerHostId={props.panelLayerHostId}
+          onSelectTeam={(teamId) =>
+            props.onNavigate({ view: 'Stories', teamId, focusedVoting: false })
+          }
+          onNavigateTeams={() => props.onNavigate({ view: 'Teams', focusedVoting: false })}
+        />
+      );
+    }
     return (
-      <FeaturePlaceholder
-        title="No story selected"
-        description="Choose a team before managing its ready, pointed, and archived stories."
+      <StatusState
+        kind="error"
+        title="Stories could not be initialized"
+        description={
+          props.teamManagementError ?? 'Verify the collaboration connection and reload the page.'
+        }
       />
     );
   }
@@ -173,6 +233,18 @@ function ShellView(props: IApplicationShellProps): React.ReactElement {
       <FeaturePlaceholder
         title="No voting session open"
         description="Open a shareable session link from a host to enter focused voting."
+      />
+    );
+  }
+  if (props.teamManagement !== undefined) {
+    return <TeamsPage {...props.teamManagement} panelLayerHostId={props.panelLayerHostId} />;
+  }
+  if (props.teamManagementError !== undefined) {
+    return (
+      <StatusState
+        kind="error"
+        title="Teams could not be initialized"
+        description={props.teamManagementError}
       />
     );
   }
@@ -214,6 +286,9 @@ function getViewDescription(route: IPlanningPokerRoute): string {
  */
 export function ApplicationShell(props: IApplicationShellProps): React.ReactElement {
   const mainRegion = React.useRef<HTMLElement>(null);
+  const [panelLayerHostId] = React.useState(
+    () => `planning-poker-panel-layer-${nextShellLayerId++}`
+  );
   const previousRoute = React.useRef(props.route);
   React.useEffect(() => {
     if (previousRoute.current !== props.route) {
@@ -334,8 +409,9 @@ export function ApplicationShell(props: IApplicationShellProps): React.ReactElem
             {ROUTE_NOTICE_TEXT[props.routeNotice]}
           </MessageBar>
         )}
-        <ShellView {...props} />
+        <ShellView {...props} panelLayerHostId={panelLayerHostId} />
       </main>
+      <LayerHost id={panelLayerHostId} className={styles.panelLayerHost} />
     </div>
   );
 }

@@ -11,6 +11,19 @@ import { PlanningPokerStorageService } from '../../storage/planningPokerStorageS
 import { SpHttpTransport } from '../../storage/spHttpTransport';
 import type { IPlanningPokerStorageConfiguration } from '../../storage/storageTypes';
 import { SHAREPOINT_METADATA_FIELDS } from '../../domain/planningPokerDomain';
+import type { UserReference } from '../../domain/planningPokerDomain';
+import {
+  OdspTeamDocumentStore,
+  createOdspTokenProvider
+} from '../../repository/odspTeamDocumentStore';
+import { TeamRepository } from '../../repository/teamRepository';
+import { GraphDriveService } from '../../repository/graphDriveService';
+import type { IPlanningPokerDriveService } from '../../repository/graphDriveService';
+import { SharePointPeopleService } from '../../teams/sharePointPeopleService';
+import { TeamManagementService } from '../../teams/teamManagementService';
+import type { ITeamManagementService } from '../../teams/teamManagementService';
+import { StoryManagementService } from '../../stories/storyManagement';
+import type { IStoryManagementService } from '../../stories/storyManagement';
 
 import * as strings from 'PlanningPokerWebPartStrings';
 import PlanningPoker from './components/PlanningPoker';
@@ -27,8 +40,16 @@ export interface IPlanningPokerWebPartProps {
 /** Initializes SharePoint services and owns the Planning Poker React root. */
 export default class PlanningPokerWebPart extends BaseClientSideWebPart<IPlanningPokerWebPartProps> {
   private _storageService: PlanningPokerStorageService | undefined;
+  private _driveService: IPlanningPokerDriveService | undefined;
   private _theme?: IReadonlyTheme;
   private _storageInitializationError?: string;
+  private _teamManagement?: {
+    readonly currentUser: UserReference;
+    readonly service: ITeamManagementService;
+    readonly peopleService: SharePointPeopleService;
+    readonly storyService: IStoryManagementService;
+  };
+  private _teamManagementError?: string;
 
   /** @returns `void` after rendering the initialized React tree. */
   public render(): void {
@@ -57,7 +78,9 @@ export default class PlanningPokerWebPart extends BaseClientSideWebPart<IPlannin
         upn: userUpn,
         imageUrl
       },
-      serviceScope: this.context.serviceScope
+      serviceScope: this.context.serviceScope,
+      teamManagement: this._teamManagement,
+      teamManagementError: this._teamManagementError
     });
 
     ReactDom.render(element, this.domElement);
@@ -70,8 +93,12 @@ export default class PlanningPokerWebPart extends BaseClientSideWebPart<IPlannin
    */
   protected async onInit(): Promise<void> {
     await super.onInit();
+    const graphClient = await this.context.msGraphClientFactory.getClient('3');
+    const driveService = new GraphDriveService(graphClient);
+    this._driveService = driveService;
     const storageService = new PlanningPokerStorageService(
       new SpHttpTransport(this.context.spHttpClient, this.context.pageContext.web.absoluteUrl),
+      driveService,
       {
         webAbsoluteUrl: this.context.pageContext.web.absoluteUrl,
         metadataFields: SHAREPOINT_METADATA_FIELDS
@@ -83,6 +110,9 @@ export default class PlanningPokerWebPart extends BaseClientSideWebPart<IPlannin
       );
       this.properties.storageConfiguration =
         saved.configuration ?? (await storageService.findConfiguration());
+      if (this.properties.storageConfiguration !== undefined) {
+        await this.initializeTeamManagement(this.properties.storageConfiguration);
+      }
     } catch {
       this._storageInitializationError =
         'Planning Poker storage could not be checked. Verify the SharePoint connection and try again.';
@@ -104,9 +134,74 @@ export default class PlanningPokerWebPart extends BaseClientSideWebPart<IPlannin
     }
     this.properties.storageConfiguration = configuration;
     this._storageInitializationError = undefined;
+    this._teamManagement = undefined;
+    this._teamManagementError = undefined;
     this.context.propertyPane.refresh();
     this.render();
+    this.initializeTeamManagement(configuration).then(
+      () => this.render(),
+      () => {
+        this._teamManagementError =
+          'Verify your SharePoint identity and collaboration connection, then reload the page.';
+        this.render();
+      }
+    );
   };
+
+  /**
+   * Initializes stable identity, SharePoint people resolution, and ODSP team persistence.
+   *
+   * @param configuration - Validated Planning Poker storage configuration.
+   * @returns A promise that resolves after Teams can render authenticated data.
+   */
+  private async initializeTeamManagement(
+    configuration: IPlanningPokerStorageConfiguration
+  ): Promise<void> {
+    const transport = new SpHttpTransport(
+      this.context.spHttpClient,
+      this.context.pageContext.web.absoluteUrl
+    );
+    const peopleService = new SharePointPeopleService(transport);
+    try {
+      if (this._driveService === undefined) {
+        throw new Error('Microsoft Graph drive service is unavailable.');
+      }
+      const currentUser = await peopleService.resolve(this.context.pageContext.user.loginName);
+      const aadTokenProvider = await this.context.aadTokenProviderFactory.getTokenProvider();
+      const tokenProvider = createOdspTokenProvider(
+        configuration.webAbsoluteUrl,
+        (resource, refresh) => aadTokenProvider.getToken(resource, !refresh)
+      );
+      const store = new OdspTeamDocumentStore(
+        configuration,
+        transport,
+        this._driveService,
+        tokenProvider
+      );
+      const repository = new TeamRepository(configuration, store);
+      this._teamManagement = {
+        currentUser,
+        peopleService,
+        service: new TeamManagementService(
+          repository,
+          currentUser,
+          () => crypto.randomUUID(),
+          () => new Date().toISOString()
+        ),
+        storyService: new StoryManagementService(
+          repository,
+          currentUser,
+          () => crypto.randomUUID(),
+          () => new Date().toISOString()
+        )
+      };
+      this._teamManagementError = undefined;
+    } catch {
+      this._teamManagement = undefined;
+      this._teamManagementError =
+        'Verify your SharePoint identity and collaboration connection, then reload the page.';
+    }
+  }
 
   /**
    * Synchronizes SharePoint theme changes with React and CSS custom properties.

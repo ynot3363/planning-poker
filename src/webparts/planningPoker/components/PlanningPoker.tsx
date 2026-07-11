@@ -12,6 +12,10 @@ import { ApplicationShell } from '../../../shell/ApplicationShell';
 import type { IPlanningPokerCurrentUser } from '../../../shell/ApplicationShell';
 import { readPlanningPokerRoute, writePlanningPokerRoute } from '../../../shell/planningPokerRoute';
 import type { IPlanningPokerRoute } from '../../../shell/planningPokerRoute';
+import type { UserReference } from '../../../domain/planningPokerDomain';
+import type { ITeamManagementService } from '../../../teams/teamManagementService';
+import type { IPlanningPokerPeopleService } from '../../../teams/sharePointPeopleService';
+import type { IStoryManagementService } from '../../../stories/storyManagement';
 import styles from './PlanningPoker.module.scss';
 import { PlanningPokerThemeProvider } from './PlanningPokerTheme';
 
@@ -64,6 +68,15 @@ export interface IPlanningPokerProps {
   readonly currentUser: IPlanningPokerCurrentUser;
   /** SPFx service scope required by Microsoft 365 host components. */
   readonly serviceScope: ServiceScope;
+  /** Authenticated team-administration dependencies initialized by the web part. */
+  readonly teamManagement?: {
+    readonly currentUser: UserReference;
+    readonly service: ITeamManagementService;
+    readonly peopleService: IPlanningPokerPeopleService;
+    readonly storyService: IStoryManagementService;
+  };
+  /** Safe team-service initialization failure for the Teams destination. */
+  readonly teamManagementError?: string;
   /** Optional route adapter used by tests or specialized Microsoft 365 hosts. */
   readonly routeAdapter?: IPlanningPokerRouteAdapter;
 }
@@ -80,6 +93,15 @@ function ConfiguredPlanningPoker(props: IPlanningPokerProps): React.ReactElement
     readPlanningPokerRoute(routeAdapter.getSearch())
   );
   const [isNavigationCollapsed, setIsNavigationCollapsed] = React.useState(false);
+  const [lastStoriesTeamId, setLastStoriesTeamId] = React.useState<string | undefined>(() =>
+    routeResult.route.view === 'Stories' ? routeResult.route.teamId : undefined
+  );
+
+  React.useEffect(() => {
+    if (routeResult.route.view === 'Stories' && routeResult.route.teamId !== undefined) {
+      setLastStoriesTeamId(routeResult.route.teamId);
+    }
+  }, [routeResult.route]);
 
   React.useEffect(() => {
     if (routeAdapter.subscribe === undefined) {
@@ -91,7 +113,14 @@ function ConfiguredPlanningPoker(props: IPlanningPokerProps): React.ReactElement
   }, [routeAdapter]);
 
   const handleNavigate = (route: IPlanningPokerRoute): void => {
-    const search = writePlanningPokerRoute(routeAdapter.getSearch(), route);
+    const nextRoute: IPlanningPokerRoute =
+      route.view === 'Stories' && route.teamId === undefined && lastStoriesTeamId !== undefined
+        ? { ...route, teamId: lastStoriesTeamId }
+        : route;
+    if (nextRoute.view === 'Stories' && nextRoute.teamId !== undefined) {
+      setLastStoriesTeamId(nextRoute.teamId);
+    }
+    const search = writePlanningPokerRoute(routeAdapter.getSearch(), nextRoute);
     routeAdapter.replaceSearch(search);
     setRouteResult(readPlanningPokerRoute(search));
   };
@@ -105,6 +134,8 @@ function ConfiguredPlanningPoker(props: IPlanningPokerProps): React.ReactElement
       configurationStatus="configured"
       currentUser={props.currentUser}
       serviceScope={props.serviceScope}
+      teamManagement={props.teamManagement}
+      teamManagementError={props.teamManagementError}
       onNavigate={handleNavigate}
       onToggleNavigation={() => setIsNavigationCollapsed((current) => !current)}
     />

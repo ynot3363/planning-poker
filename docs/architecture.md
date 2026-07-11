@@ -127,28 +127,18 @@ For SPFx web parts, the web part property bag is a practical place to persist th
 
 Fluid ODSP needs a drive id, not just a SharePoint list id.
 
-In SharePoint Online, direct list-drive endpoints such as:
+Use the SPFx Microsoft Graph client for drive discovery. Resolve the current
+site by its hostname and server-relative path, enumerate its document-library
+drives, and match the configured SharePoint list:
 
 ```text
-/_api/v2.1/lists/{listId}/drive
+GET https://graph.microsoft.com/v1.0/sites/{hostname}:/{site-path}:/drives
 ```
 
-may return:
-
-```text
-apiNotFound
-```
-
-A more reliable pattern is to enumerate the site's drive collection and match the document library:
-
-```text
-/_api/v2.1/drives?$select=id,name,webUrl,sharepointIds,system
-/_api/v2.0/drives?$select=id,name,webUrl,sharepointIds,system
-```
-
-Explicitly select the `system` facet. SharePoint can omit a hidden library from
-the drive collection unless system drives are requested, including when a saved
-web part configuration is revalidated after provisioning.
+The application must request the delegated Microsoft Graph `Files.ReadWrite`
+permission through the SPFx solution manifest, and a tenant administrator must
+approve it before Graph-backed drive discovery, rename, and recycle operations
+can run.
 
 Match by:
 
@@ -157,7 +147,7 @@ Match by:
 - normalized drive web URL
 - normalized library root URL
 
-Newly created libraries can take a short time to appear as ODSP drives. Add retries before failing the provisioning flow.
+Newly created libraries can take a short time to appear as Graph drives. Add retries before failing the provisioning flow. Resolve team files and attached-file `sharepointIds` through `/drives/{drive-id}` Graph endpoints; do not use SharePoint `_api/v2.1` endpoints.
 
 ## SharePoint REST Gotchas
 
@@ -175,7 +165,9 @@ For person fields:
 
 - Create multi-person fields with `UserMulti`.
 - Use `ensureuser` to resolve people to numeric SharePoint user ids before writing person fields.
-- Update multi-person fields through the `{InternalName}Id` field with `{ results: number[] }`.
+- With OData 4 requests, update multi-person fields through the
+  `{InternalName}Id` field with a direct `number[]`. The classic verbose OData
+  shape uses `{ results: number[] }`; do not mix the two JSON shapes.
 
 ## Fluid Container Model
 

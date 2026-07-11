@@ -117,7 +117,6 @@ export function StatusState(props: IStatusStateProps): React.ReactElement {
           : MessageBarType.info;
   return (
     <div
-      className={styles.statusState}
       role={props.kind === 'error' ? 'alert' : 'status'}
       aria-live={props.kind === 'error' ? 'assertive' : 'polite'}
     >

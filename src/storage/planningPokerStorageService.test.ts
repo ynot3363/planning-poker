@@ -1,6 +1,7 @@
 import { SHAREPOINT_METADATA_FIELDS } from '../domain/planningPokerDomain';
+import type { IPlanningPokerDriveService } from '../repository/graphDriveService';
 import { PlanningPokerStorageService } from './planningPokerStorageService';
-import type { ISharePointTransport } from './storageTypes';
+import type { ISharePointDrive, ISharePointTransport } from './storageTypes';
 
 function createTransport(
   getImplementation: (path: string) => Promise<unknown>,
@@ -13,10 +14,24 @@ function createTransport(
   };
 }
 
+function createDriveService(
+  listSiteDrives: (webAbsoluteUrl: string) => Promise<readonly ISharePointDrive[]> = async () => []
+): jest.Mocked<IPlanningPokerDriveService> {
+  return {
+    listSiteDrives: jest.fn(listSiteDrives),
+    getDrive: jest.fn(async (driveId: string) => ({ id: driveId })),
+    getByPath: jest.fn(async (_driveId: string, _fileName: string) => ({})),
+    get: jest.fn(async (_driveId: string, _driveItemId: string) => ({})),
+    rename: jest.fn(async (_driveId: string, _driveItemId: string, _fileName: string) => undefined),
+    recycle: jest.fn(async (_driveId: string, _driveItemId: string) => ({}))
+  };
+}
+
 describe('PlanningPokerStorageService', () => {
   it('requires the exact Manage Lists permission bit', async () => {
     const allowedService = new PlanningPokerStorageService(
       createTransport(async () => ({ High: 0, Low: 0x00000800 })),
+      createDriveService(),
       {
         webAbsoluteUrl: 'https://example.sharepoint.com/sites/team',
         metadataFields: SHAREPOINT_METADATA_FIELDS
@@ -24,6 +39,7 @@ describe('PlanningPokerStorageService', () => {
     );
     const unrelatedPermissionService = new PlanningPokerStorageService(
       createTransport(async () => ({ High: 16, Low: 1 })),
+      createDriveService(),
       {
         webAbsoluteUrl: 'https://example.sharepoint.com/sites/team',
         metadataFields: SHAREPOINT_METADATA_FIELDS
@@ -58,26 +74,30 @@ describe('PlanningPokerStorageService', () => {
           }))
         };
       }
-      if (path.includes('_api/v2.1/drives')) {
-        return { value: [{ id: 'drive-id', sharepointIds: { listId: 'list-id' } }] };
-      }
       throw new Error(`Unexpected test path: ${path}`);
     });
-    const service = new PlanningPokerStorageService(createTransport(getImplementation), {
-      webAbsoluteUrl: 'https://example.sharepoint.com/sites/team',
-      metadataFields: SHAREPOINT_METADATA_FIELDS,
-      now: () => new Date('2026-07-10T00:00:00.000Z'),
-      retryDelay: async () => undefined
-    });
+    const driveService = createDriveService(async () => [
+      { id: 'drive-id', sharepointIds: { listId: 'list-id' } }
+    ]);
+    const service = new PlanningPokerStorageService(
+      createTransport(getImplementation),
+      driveService,
+      {
+        webAbsoluteUrl: 'https://example.sharepoint.com/sites/team',
+        metadataFields: SHAREPOINT_METADATA_FIELDS,
+        now: () => new Date('2026-07-10T00:00:00.000Z'),
+        retryDelay: async () => undefined
+      }
+    );
 
     await expect(service.findConfiguration()).resolves.toMatchObject({
       listId: 'list-id',
       driveId: 'drive-id',
       lastValidatedAt: '2026-07-10T00:00:00.000Z'
     });
-    expect(
-      getImplementation.mock.calls.find(([path]) => path.includes('_api/v2.1/drives'))?.[0]
-    ).toContain('system');
+    expect(driveService.listSiteDrives).toHaveBeenCalledWith(
+      'https://example.sharepoint.com/sites/team'
+    );
   });
 
   it('revalidates persisted configuration against a hidden system drive', async () => {
@@ -97,25 +117,23 @@ describe('PlanningPokerStorageService', () => {
           }))
         };
       }
-      if (path.includes('_api/v2.1/drives')) {
-        expect(path).toContain('system');
-        return {
-          value: [
-            {
-              id: 'drive-id',
-              sharepointIds: { listId: 'list-id' },
-              system: {}
-            }
-          ]
-        };
-      }
       throw new Error(`Unexpected test path: ${path}`);
     });
-    const service = new PlanningPokerStorageService(createTransport(getImplementation), {
-      webAbsoluteUrl: 'https://example.sharepoint.com/sites/team',
-      metadataFields: SHAREPOINT_METADATA_FIELDS,
-      now: () => new Date('2026-07-10T00:00:00.000Z')
+    const driveService = createDriveService();
+    driveService.getDrive.mockResolvedValue({
+      id: 'drive-id',
+      sharepointIds: { listId: 'list-id' },
+      system: {}
     });
+    const service = new PlanningPokerStorageService(
+      createTransport(getImplementation),
+      driveService,
+      {
+        webAbsoluteUrl: 'https://example.sharepoint.com/sites/team',
+        metadataFields: SHAREPOINT_METADATA_FIELDS,
+        now: () => new Date('2026-07-10T00:00:00.000Z')
+      }
+    );
 
     await expect(
       service.validateConfiguration({
@@ -133,6 +151,8 @@ describe('PlanningPokerStorageService', () => {
       isValid: true,
       configuration: { driveId: 'drive-id' }
     });
+    expect(driveService.getDrive).toHaveBeenCalledWith('drive-id');
+    expect(driveService.listSiteDrives).not.toHaveBeenCalled();
   });
 
   it('repairs fields, resolves the drive, and then hides the library', async () => {
@@ -165,13 +185,6 @@ describe('PlanningPokerStorageService', () => {
               }))
             };
       }
-      if (path.includes('_api/v2.1/drives')) {
-        provisioningOrder.push('resolve-drive');
-        driveReadCount += 1;
-        return driveReadCount === 1
-          ? { value: [] }
-          : { value: [{ id: 'drive-id', sharepointIds: { listId: 'list-id' } }] };
-      }
       throw new Error(`Unexpected test path: ${path}`);
     });
     const postImplementation = jest.fn(async (_path: string, body?: unknown): Promise<unknown> => {
@@ -181,8 +194,14 @@ describe('PlanningPokerStorageService', () => {
       return undefined;
     });
     const retryDelay = jest.fn(async (): Promise<void> => undefined);
+    const driveService = createDriveService(async () => {
+      provisioningOrder.push('resolve-drive');
+      driveReadCount += 1;
+      return driveReadCount === 1 ? [] : [{ id: 'drive-id', sharepointIds: { listId: 'list-id' } }];
+    });
     const service = new PlanningPokerStorageService(
       createTransport(getImplementation, postImplementation),
+      driveService,
       {
         webAbsoluteUrl: 'https://example.sharepoint.com/sites/team',
         metadataFields: SHAREPOINT_METADATA_FIELDS,
@@ -246,10 +265,6 @@ describe('PlanningPokerStorageService', () => {
           }))
         };
       }
-      if (path.includes('_api/v2.1/drives')) {
-        provisioningOrder.push('resolve-drive');
-        return { value: [{ id: 'drive-id', sharepointIds: { listId: 'new-list' } }] };
-      }
       throw new Error(`Unexpected test path: ${path}`);
     });
     const postImplementation = jest.fn(async (path: string, body?: unknown): Promise<unknown> => {
@@ -264,6 +279,10 @@ describe('PlanningPokerStorageService', () => {
     });
     const service = new PlanningPokerStorageService(
       createTransport(getImplementation, postImplementation),
+      createDriveService(async () => {
+        provisioningOrder.push('resolve-drive');
+        return [{ id: 'drive-id', sharepointIds: { listId: 'new-list' } }];
+      }),
       {
         webAbsoluteUrl: 'https://example.sharepoint.com/sites/team',
         metadataFields: SHAREPOINT_METADATA_FIELDS,
@@ -286,6 +305,7 @@ describe('PlanningPokerStorageService', () => {
   it('blocks provisioning when Manage Lists permission is absent', async () => {
     const service = new PlanningPokerStorageService(
       createTransport(async () => ({ High: 0, Low: 1 })),
+      createDriveService(),
       {
         webAbsoluteUrl: 'https://example.sharepoint.com/sites/team',
         metadataFields: SHAREPOINT_METADATA_FIELDS

@@ -1,0 +1,73 @@
+.commandRow {
+  display: flex;
+  justify-content: flex-end;
+  margin-block-end: 16px;
+}
+
+.teamGrid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.teamCard {
+  block-size: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.teamCard h2,
+.teamCard p {
+  margin: 0;
+}
+
+.teamMeta {
+  color: '[theme:neutralSecondary, default: #605e5c]';
+}
+
+.inactiveLabel {
+  align-self: flex-start;
+  background: '[theme:neutralLighter, default: #f3f2f1]';
+  border-radius: 10px;
+  color: '[theme:neutralPrimary, default: #323130]';
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+}
+
+.cardActions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-block-start: auto;
+}
+
+.deleteAction,
+.confirmDeleteAction {
+  border-color: '[theme:errorText, default: #a4262c]';
+  color: '[theme:errorText, default: #a4262c]';
+}
+
+.confirmDeleteAction {
+  background: '[theme:errorText, default: #a4262c]';
+  color: '[theme:white, default: #ffffff]';
+}
+
+@media (max-width: 640px) {
+  .teamGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (forced-colors: active) {
+  .deleteAction,
+  .confirmDeleteAction {
+    border-color: ButtonText;
+    color: ButtonText;
+  }
+}

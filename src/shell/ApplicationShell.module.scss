@@ -14,8 +14,13 @@
   color: '[theme:bodyText, default: #323130]';
   display: flex;
   inline-size: 100%;
-  min-block-size: 420px;
+  min-block-size: 620px;
   overflow: hidden;
+  position: relative;
+}
+
+.shell button {
+  border-radius: 6px;
 }
 
 .focusedShell {
@@ -193,8 +198,13 @@
   border-block-start: 4px solid var(--planning-poker-default-border);
 }
 
-.statusState {
-  max-inline-size: 680px;
+.panelLayerHost {
+  border-radius: inherit;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  position: absolute;
+  z-index: 10;
 }
 
 .statusDescription {

@@ -1,4 +1,5 @@
 import { CURRENT_SCHEMA_VERSION, SHAREPOINT_METADATA_FIELDS } from '../domain/planningPokerDomain';
+import type { IPlanningPokerDriveService } from '../repository/graphDriveService';
 import { PLANNING_POKER_LIBRARY_TITLE, STORAGE_PROVISIONING_VERSION } from './storageTypes';
 import type {
   IPlanningPokerStorageConfiguration,
@@ -30,10 +31,12 @@ export class PlanningPokerStorageService implements IPlanningPokerStorageService
    * Creates a storage service with explicit SharePoint transport dependencies.
    *
    * @param transport - The authenticated, site-scoped SharePoint transport.
+   * @param driveService - The authenticated Microsoft Graph drive boundary.
    * @param options - Site URL, metadata fields, clock, and retry dependencies.
    */
   public constructor(
     private readonly transport: ISharePointTransport,
+    private readonly driveService: IPlanningPokerDriveService,
     private readonly options: IStorageServiceOptions
   ) {
     this.now = options.now ?? (() => new Date());
@@ -84,7 +87,7 @@ export class PlanningPokerStorageService implements IPlanningPokerStorageService
     }
     try {
       const list = await this.getList(configuration.listId);
-      const result = await this.createConfiguration(list);
+      const result = await this.createConfiguration(list, configuration.driveId);
       if (result.driveId !== configuration.driveId) {
         return { isValid: false, message: 'The configured ODSP drive is no longer available.' };
       }
@@ -236,11 +239,13 @@ export class PlanningPokerStorageService implements IPlanningPokerStorageService
    * Builds a refreshed configuration from validated SharePoint resources.
    *
    * @param list - The storage library.
+   * @param knownDriveId - Persisted drive ID used to revalidate a hidden library directly.
    * @returns The complete configuration persisted by the web part.
    * @throws Throws when a required field, folder, or ODSP drive is missing.
    */
   private async createConfiguration(
-    list: ISharePointList
+    list: ISharePointList,
+    knownDriveId?: string
   ): Promise<IPlanningPokerStorageConfiguration> {
     const fields = await this.getPagedCollection<ISharePointField>(
       `${this.getListPath(list.Id)}/fields?$select=Title,InternalName`
@@ -253,7 +258,7 @@ export class PlanningPokerStorageService implements IPlanningPokerStorageService
       }
       fieldMap[field.displayName] = persistedField.InternalName;
     }
-    const drive = await this.resolveDrive(list);
+    const drive = await this.resolveDrive(list, knownDriveId);
     const serverRelativeUrl = list.RootFolder?.ServerRelativeUrl;
     if (serverRelativeUrl === undefined) {
       throw new Error('The Planning Poker library root folder is unavailable.');
@@ -275,14 +280,24 @@ export class PlanningPokerStorageService implements IPlanningPokerStorageService
    * Resolves the library's ODSP drive with bounded retries for propagation delay.
    *
    * @param list - The SharePoint library whose drive is required.
+   * @param knownDriveId - Persisted drive ID used to revalidate a hidden library directly.
    * @returns The matching ODSP drive.
    * @throws Throws when the drive remains unavailable after the retry budget.
    */
-  private async resolveDrive(list: ISharePointList): Promise<ISharePointDrive> {
+  private async resolveDrive(
+    list: ISharePointList,
+    knownDriveId?: string
+  ): Promise<ISharePointDrive> {
+    if (knownDriveId !== undefined) {
+      const knownDrive = await this.driveService.getDrive(knownDriveId);
+      const matchingDrive = findDrive([knownDrive], list);
+      if (matchingDrive !== undefined) {
+        return matchingDrive;
+      }
+      throw new Error('The configured drive no longer belongs to the Planning Poker library.');
+    }
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      const drives = await this.getPagedCollection<ISharePointDrive>(
-        '_api/v2.1/drives?$select=id,name,webUrl,sharepointIds,system'
-      );
+      const drives = await this.driveService.listSiteDrives(this.options.webAbsoluteUrl);
       const drive = findDrive(drives, list);
       if (drive !== undefined) {
         return drive;

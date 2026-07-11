@@ -45,6 +45,12 @@ describe('Planning Poker route handling', () => {
     expect(result).not.toContain('planningPokerTeam');
     expect(parsePlanningPokerRoute(result).view).toBe('About');
     expect(parsePlanningPokerRoute('planningPokerView=Stories').view).toBe('Stories');
+    expect(
+      readPlanningPokerRoute('planningPokerView=Stories&planningPokerTeam=team-1')
+    ).toMatchObject({
+      route: { view: 'Stories', teamId: 'team-1', focusedVoting: false },
+      notice: undefined
+    });
   });
 
   it('explains invalid and incomplete route fallbacks without exposing untrusted values', () => {

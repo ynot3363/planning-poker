@@ -1,0 +1,64 @@
+.panelBody {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding-block: 8px 24px;
+}
+
+.section {
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  min-inline-size: 0;
+  padding: 0;
+}
+
+.section legend {
+  font-size: 16px;
+  font-weight: 600;
+  margin-block-end: 8px;
+}
+
+.pickerError {
+  color: '[theme:errorText, default: #a4262c]';
+  font-size: 12px;
+  margin-block-start: 4px;
+}
+
+.scalePreview {
+  color: '[theme:neutralSecondary, default: #605e5c]';
+  margin: 0;
+}
+
+.customScaleList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.customScaleItem {
+  align-items: flex-end;
+  display: flex;
+  gap: 4px;
+}
+
+.customScaleField {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+.footer {
+  display: flex;
+  gap: 8px;
+}
+
+@media (forced-colors: active) {
+  .pickerError {
+    color: Mark;
+  }
+}
