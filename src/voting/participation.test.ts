@@ -4,7 +4,7 @@ import {
   fixtureUser
 } from '../domain/planningPokerFixtures';
 import type { VotingSession } from '../domain/planningPokerDomain';
-import { getEligibleVoterIds, selectParticipation } from './participation';
+import { getEligibleVoterIds, selectCurrentVoteValue, selectParticipation } from './participation';
 
 const namedParticipant = {
   kind: 'Named' as const,
@@ -60,17 +60,49 @@ describe('participation selectors', () => {
 
     expect(presentation).toEqual({
       mode: 'Named',
-      counts: { joined: 1, voted: 1, remaining: 0 },
+      counts: { joined: 1, connected: 1, disconnected: 0, voted: 1, remaining: 0 },
       rows: [expect.objectContaining({ displayName: fixtureUser.displayName, hasVoted: true })]
     });
     expect(JSON.stringify(presentation)).not.toContain('"8"');
   });
 
+  it('returns only the current participant vote for local selection feedback', () => {
+    expect(selectCurrentVoteValue(createSession('Named'), 'named-1')).toBe('8');
+    expect(selectCurrentVoteValue(createSession('Named'), 'someone-else')).toBeUndefined();
+  });
+
   it('shows only aggregate anonymous state plus the current browser alias', () => {
     expect(selectParticipation(createSession('Anonymous'), 'participant-1')).toEqual({
       mode: 'Anonymous',
-      counts: { joined: 1, voted: 1, remaining: 0 },
+      counts: { joined: 1, connected: 1, disconnected: 0, voted: 1, remaining: 0 },
       currentAlias: 'Participant 1'
     });
+  });
+
+  it('retains a disconnected named voter without counting them as remaining', () => {
+    const session = createSession('Named');
+    const disconnectedSession: VotingSession = {
+      ...session,
+      participants: [
+        {
+          ...namedParticipant,
+          presence: {
+            connection: 'Disconnected',
+            lastSeenAt: fixtureDocument.updatedAt
+          }
+        }
+      ],
+      rounds: [{ ...session.rounds[0], votes: [] }]
+    };
+    const presentation = selectParticipation(disconnectedSession, 'named-1');
+
+    expect(presentation.counts).toEqual({
+      joined: 1,
+      connected: 0,
+      disconnected: 1,
+      voted: 0,
+      remaining: 0
+    });
+    expect(getEligibleVoterIds(disconnectedSession)).toEqual([]);
   });
 });

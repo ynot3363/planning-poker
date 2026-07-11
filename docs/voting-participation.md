@@ -6,9 +6,17 @@ Changing the team's settings later does not change that open session.
 ## Named sessions
 
 Joining publishes the minimum authenticated `UserReference` needed to identify
-the participant. The session roster shows Fluent UI personas, connection state,
-and whether each joined participant has voted in the active round. Vote values
-remain hidden until the reveal workflow.
+the participant. The session roster shows Microsoft 365 LivePersona cards,
+connection state, and whether each joined participant has voted in the active
+round. Vote values remain hidden until the reveal workflow.
+
+Fluid Presence observes attendee heartbeat/disconnect events. A Named
+participant remains in the roster as Disconnected after their last attendee
+leaves, retains an existing vote, and is excluded from the remaining-voter
+count so they cannot block reveal. The adapter caches each attendee's latest
+participant binding and performs a short delayed reconciliation against the
+connected attendee set, covering disconnect events whose remote state has
+already been removed.
 
 Configured team members and authenticated link invitees use the same join flow.
 Only people who join the session are eligible voters; configured members who do
@@ -25,10 +33,12 @@ and other clients see joined, voted, and remaining counts rather than alias
 rows. A participant sees only their own alias.
 
 The browser keeps an opaque reconnect record in `sessionStorage` for the open
-session. Refreshing in the same browser tab reclaims the existing participant
-and alias. Closing the tab, clearing browser session data, blocking storage, or
-otherwise losing that record creates a new anonymous participant on the next
-join. The reconnect record is not placed in the URL or Fluid state.
+session. Refreshing in the same browser tab reuses the opaque participant ID
+when possible. Fluid Presence publishes only the opaque session ID,
+participant ID, and mode. When that attendee disconnects, other clients remove
+the Anonymous roster entry and its active unrevealed vote. A later reconnect
+recreates participation and may receive a new alias. The reconnect record is
+not placed in the URL or Fluid state.
 
 Anonymous mode is an application data and presentation contract. It does not
 provide network-level anonymity from Microsoft 365, SharePoint, tenant
@@ -41,5 +51,7 @@ document.
 - Anonymous host view: `5 joined · 3 voted · 2 remaining`.
 - Anonymous participant view: `Your session alias is Participant 4` plus the
   same aggregate counts.
-- Reconnect: the named identity or browser-local anonymous record selects the
-  existing durable participant instead of adding a second roster row.
+- Named disconnect: `Alex Morgan — Voted · Disconnected`, excluded from the
+  remaining count.
+- Anonymous disconnect: the attendee and active unrevealed vote leave the
+  aggregate count; a reconnect joins again.

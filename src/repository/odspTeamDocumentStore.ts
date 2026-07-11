@@ -1,4 +1,7 @@
 import type { IFluidContainer } from '@fluidframework/fluid-static';
+import { getPresence } from 'fluid-framework';
+import { StateFactory } from '@fluidframework/presence/beta';
+import type { Attendee, Latest, StatesWorkspaceSchema } from '@fluidframework/presence/beta';
 import { OdspClient } from '@fluidframework/odsp-client/beta';
 import type { IOdspTokenProvider, OdspContainerServices } from '@fluidframework/odsp-client/beta';
 import { Tree, TreeViewConfiguration } from '@fluidframework/tree';
@@ -14,7 +17,10 @@ import type {
   PlanningPokerTeam,
   PointingStory,
   SessionParticipant,
+  StoryVotingRound,
   UserReference,
+  VoteRecord,
+  VotingTimer,
   VotingSession
 } from '../domain/planningPokerDomain';
 import { PlanningPokerDocumentRootSchema } from '../domain/planningPokerSchema';
@@ -67,6 +73,7 @@ interface ITeamItemRecord {
   readonly isActive: boolean;
   readonly activeSessionId?: string;
   readonly hostIds: readonly number[];
+  readonly participantIds: readonly number[];
   readonly driveItemId?: string;
 }
 
@@ -94,7 +101,85 @@ interface IMutableVotingSession {
   readonly id: string;
   readonly status: VotingSession['status'];
   participants: readonly SessionParticipant[];
+  readonly rounds: readonly StoryVotingRound[];
+  activeRoundId?: string;
   updatedAt: string;
+}
+
+interface IMutableVotingRound {
+  readonly id: string;
+  status: StoryVotingRound['status'];
+  readonly votes: readonly VoteRecord[];
+  timer: VotingTimer;
+}
+
+interface IMutableVoteRecord {
+  readonly participantId: string;
+  value: string;
+  castAt: string;
+}
+
+interface IMutableParticipantPresence {
+  connection: 'Connected' | 'Disconnected';
+  lastSeenAt: string;
+}
+
+interface IParticipantPresenceBinding {
+  readonly sessionId: string;
+  readonly participantId: string;
+  readonly mode: 'Named' | 'Anonymous' | 'None';
+}
+
+/**
+ * Appends through SharedTree's sequence API, with a plain-array fallback for isolated store tests.
+ *
+ * @param items - SharedTree sequence or plain test array.
+ * @param item - Detached item to append.
+ * @returns `void` after the local insertion.
+ */
+function appendTreeItem<T>(items: readonly T[], item: T): void {
+  const mutable = items as T[] & { insertAtEnd?: (value: T) => void };
+  if (mutable.insertAtEnd !== undefined) {
+    mutable.insertAtEnd(item);
+  } else {
+    mutable.push(item);
+  }
+}
+
+/**
+ * Removes one item through SharedTree's sequence API, with a plain-array fallback for tests.
+ *
+ * @param items - SharedTree sequence or plain test array.
+ * @param index - Current item index to remove.
+ * @returns `void` after removal.
+ */
+function removeTreeItemAt<T>(items: readonly T[], index: number): void {
+  const mutable = items as T[] & { removeAt?: (itemIndex: number) => void };
+  if (mutable.removeAt !== undefined) {
+    mutable.removeAt(index);
+  } else {
+    mutable.splice(index, 1);
+  }
+}
+
+/**
+ * Validates privacy-safe participant bindings received through ephemeral Fluid Presence.
+ *
+ * @param value - Untrusted remote presence value.
+ * @returns The validated binding or `undefined`.
+ */
+function validateParticipantPresenceBinding(
+  value: unknown
+): IParticipantPresenceBinding | undefined {
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+  const binding = value as Partial<IParticipantPresenceBinding>;
+  return typeof binding.sessionId === 'string' &&
+    typeof binding.participantId === 'string' &&
+    (binding.mode === 'Named' || binding.mode === 'Anonymous' || binding.mode === 'None')
+    ? (binding as IParticipantPresenceBinding)
+    : undefined;
 }
 
 /**
@@ -169,6 +254,20 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
     }
     const records = (await this.readTeamItems()).filter(
       (record) => record.hostIds.indexOf(currentUser.sharePointUserId as number) >= 0
+    );
+    const summaries = await Promise.all(records.map((record) => this.toSummary(record)));
+    return summaries.filter((summary): summary is HostedTeamSummary => summary !== undefined);
+  }
+
+  /** @inheritdoc */
+  public async listParticipatingIn(
+    currentUser: UserReference
+  ): Promise<readonly HostedTeamSummary[]> {
+    if (currentUser.sharePointUserId === undefined) {
+      return [];
+    }
+    const records = (await this.readTeamItems()).filter(
+      (record) => record.participantIds.indexOf(currentUser.sharePointUserId as number) >= 0
     );
     const summaries = await Promise.all(records.map((record) => this.toSummary(record)));
     return summaries.filter((summary): summary is HostedTeamSummary => summary !== undefined);
@@ -319,6 +418,188 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
   ): TeamDocumentHandle {
     const untypedView = view as unknown as ITreeRootView;
     let isDisposed = false;
+    let presenceReconcileTimeoutId: number | undefined;
+    const participantBindings = new Map<Attendee, IParticipantPresenceBinding>();
+    const presence = getPresence(container);
+    const presenceSchema = {
+      participant: StateFactory.latest<IParticipantPresenceBinding>({
+        local: { sessionId: '', participantId: '', mode: 'None' },
+        validator: validateParticipantPresenceBinding
+      })
+    } as const satisfies StatesWorkspaceSchema;
+    const participantPresence: Latest<IParticipantPresenceBinding> = presence.states.getWorkspace(
+      'planning-poker:participant:v1',
+      presenceSchema
+    ).states.participant;
+    const setParticipantConnection = (
+      sessionId: string,
+      participantId: string,
+      connection: 'Connected' | 'Disconnected',
+      timestamp: string
+    ): void => {
+      Tree.runTransaction(view, (root) => {
+        const document = root as unknown as IMutableDocumentRoot;
+        const sessionNode = document.sessions.find((session) => session.id === sessionId);
+        const participant = sessionNode?.participants.find(
+          (candidate) => candidate.id === participantId
+        );
+        if (participant === undefined) {
+          return;
+        }
+        const presence = participant.presence as IMutableParticipantPresence;
+        presence.connection = connection;
+        presence.lastSeenAt = timestamp;
+      });
+    };
+    const removeAnonymousPresenceParticipant = (
+      binding: IParticipantPresenceBinding,
+      timestamp: string
+    ): void => {
+      Tree.runTransaction(view, (root) => {
+        const document = root as unknown as IMutableDocumentRoot;
+        const sessionNode = document.sessions.find(
+          (candidate) =>
+            candidate.id === binding.sessionId &&
+            candidate.id === document.openSessionId &&
+            (candidate.status === 'Lobby' || candidate.status === 'Active')
+        );
+        if (sessionNode === undefined) {
+          return;
+        }
+        const participantIndex = sessionNode.participants.findIndex(
+          (participant) => participant.id === binding.participantId
+        );
+        if (participantIndex < 0) {
+          return;
+        }
+        removeTreeItemAt(sessionNode.participants, participantIndex);
+        const activeRound = sessionNode.rounds.find(
+          (candidate) => candidate.id === sessionNode.activeRoundId && candidate.status === 'Voting'
+        );
+        const voteIndex =
+          activeRound?.votes.findIndex((vote) => vote.participantId === binding.participantId) ??
+          -1;
+        if (activeRound !== undefined && voteIndex >= 0) {
+          removeTreeItemAt(activeRound.votes, voteIndex);
+        }
+        const session = sessionNode as unknown as IMutableVotingSession;
+        session.updatedAt = timestamp;
+        document.updatedAt = timestamp;
+      });
+    };
+    const getBinding = (attendee: Attendee): IParticipantPresenceBinding | undefined =>
+      participantPresence.getRemote(attendee).value();
+    const hasConnectedBinding = (binding: IParticipantPresenceBinding): boolean => {
+      const myself = presence.attendees.getMyself();
+      if (
+        myself.getConnectionStatus() === 'Connected' &&
+        participantPresence.local.sessionId === binding.sessionId &&
+        participantPresence.local.participantId === binding.participantId
+      ) {
+        return true;
+      }
+      return participantPresence.getStateAttendees().some((attendee: Attendee) => {
+        if (attendee === myself) {
+          return false;
+        }
+        const candidate = getBinding(attendee);
+        return (
+          attendee.getConnectionStatus() === 'Connected' &&
+          candidate?.sessionId === binding.sessionId &&
+          candidate.participantId === binding.participantId
+        );
+      });
+    };
+    const handlePresenceConnected = (binding: IParticipantPresenceBinding): void => {
+      if (binding.mode !== 'None') {
+        setParticipantConnection(
+          binding.sessionId,
+          binding.participantId,
+          'Connected',
+          new Date().toISOString()
+        );
+      }
+    };
+    const reconcileParticipantPresence = (): void => {
+      const connectedBindings = new Set<string>();
+      if (
+        presence.attendees.getMyself().getConnectionStatus() === 'Connected' &&
+        participantPresence.local.mode !== 'None'
+      ) {
+        connectedBindings.add(
+          `${participantPresence.local.sessionId}:${participantPresence.local.participantId}`
+        );
+      }
+      const myself = presence.attendees.getMyself();
+      participantPresence.getStateAttendees().forEach((attendee: Attendee) => {
+        if (attendee === myself || attendee.getConnectionStatus() !== 'Connected') {
+          return;
+        }
+        const binding = getBinding(attendee);
+        if (binding !== undefined && binding.mode !== 'None') {
+          participantBindings.set(attendee, binding);
+          connectedBindings.add(`${binding.sessionId}:${binding.participantId}`);
+        }
+      });
+      const document = this.readSnapshot(untypedView);
+      document.sessions
+        .filter(
+          (session) =>
+            (session.status === 'Lobby' || session.status === 'Active') &&
+            session.id === document.openSessionId
+        )
+        .forEach((session) => {
+          const timestamp = new Date().toISOString();
+          session.participants.forEach((participant) => {
+            const isConnected = connectedBindings.has(`${session.id}:${participant.id}`);
+            if (participant.kind === 'Anonymous') {
+              if (!isConnected) {
+                removeAnonymousPresenceParticipant(
+                  { sessionId: session.id, participantId: participant.id, mode: 'Anonymous' },
+                  timestamp
+                );
+              }
+            } else if (
+              participant.presence.connection !== (isConnected ? 'Connected' : 'Disconnected')
+            ) {
+              setParticipantConnection(
+                session.id,
+                participant.id,
+                isConnected ? 'Connected' : 'Disconnected',
+                timestamp
+              );
+            }
+          });
+        });
+    };
+    const schedulePresenceReconciliation = (): void => {
+      if (presenceReconcileTimeoutId !== undefined) {
+        window.clearTimeout(presenceReconcileTimeoutId);
+      }
+      presenceReconcileTimeoutId = window.setTimeout(() => {
+        presenceReconcileTimeoutId = undefined;
+        reconcileParticipantPresence();
+      }, 3000);
+    };
+    const handlePresenceDisconnected = (attendee: Attendee): void => {
+      const binding = participantBindings.get(attendee) ?? getBinding(attendee);
+      participantBindings.delete(attendee);
+      if (binding === undefined || binding.mode === 'None' || hasConnectedBinding(binding)) {
+        schedulePresenceReconciliation();
+        return;
+      }
+      if (binding.mode === 'Anonymous') {
+        removeAnonymousPresenceParticipant(binding, new Date().toISOString());
+      } else {
+        setParticipantConnection(
+          binding.sessionId,
+          binding.participantId,
+          'Disconnected',
+          new Date().toISOString()
+        );
+      }
+      schedulePresenceReconciliation();
+    };
     return {
       teamId,
       driveItemId,
@@ -418,32 +699,233 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
           session.updatedAt = timestamp;
           document.updatedAt = timestamp;
         });
+        if (selected !== undefined) {
+          participantPresence.local = {
+            sessionId,
+            participantId: selected.id,
+            mode: selected.kind
+          };
+          schedulePresenceReconciliation();
+        }
         return selected;
       },
-      setVotingParticipantConnection: (sessionId, participantId, connection, timestamp) => {
+      selectVotingStory: (sessionId, storyId, roundId, currentUser, replaceActive, timestamp) => {
+        let result: import('./teamRepository').VotingStorySelectionResult = 'invalid-session';
         Tree.runTransaction(view, (root) => {
           const document = root as unknown as IMutableDocumentRoot;
-          const sessionNode = document.sessions.find((session) => session.id === sessionId);
+          const sessionNode = document.sessions.find(
+            (candidate) =>
+              candidate.id === sessionId &&
+              candidate.id === document.openSessionId &&
+              candidate.status === 'Active'
+          );
           if (sessionNode === undefined) {
             return;
           }
-          const session = sessionNode as unknown as IMutableVotingSession;
-          const participants = cloneParticipants(session.participants).map((participant) =>
-            participant.id === participantId
-              ? {
-                  ...participant,
-                  presence: { connection, lastSeenAt: timestamp }
-                }
-              : participant
+          if (!document.team.hosts.some((host) => host.objectId === currentUser.objectId)) {
+            result = 'host-required';
+            return;
+          }
+          const story = document.stories.find(
+            (candidate) => candidate.id === storyId && candidate.status === 'Ready'
           );
-          session.participants = participants;
+          const finalizedStoryIds = new Set(
+            sessionNode.rounds
+              .filter((candidate) => sessionNode.finalizedRoundIds.indexOf(candidate.id) >= 0)
+              .map((candidate) => candidate.storyId)
+          );
+          if (story === undefined || finalizedStoryIds.has(storyId)) {
+            result = 'invalid-story';
+            return;
+          }
+          const currentRound = sessionNode.rounds.find(
+            (candidate) => candidate.id === sessionNode.activeRoundId
+          );
+          if (currentRound !== undefined) {
+            if (!replaceActive) {
+              result = 'active-round';
+              return;
+            }
+            if (currentRound.status !== 'Voting' || currentRound.votes.length > 0) {
+              result = 'round-has-votes';
+              return;
+            }
+          }
+          const session = sessionNode as unknown as IMutableVotingSession;
+          if (currentRound !== undefined) {
+            (currentRound as unknown as IMutableVotingRound).status = 'Cancelled';
+          }
+          const configuredDurationSeconds = sessionNode.settings.timerEnabled
+            ? (sessionNode.settings.timerDurationSeconds ?? 0)
+            : 0;
+          const round: StoryVotingRound = {
+            id: roundId,
+            storyId: story.id,
+            storySnapshot: {
+              storyId: story.id,
+              title: story.title,
+              description: story.description,
+              ...(story.link === undefined ? {} : { link: story.link })
+            },
+            status: 'Voting',
+            votes: [],
+            timer: {
+              configuredDurationSeconds,
+              status: 'Ready',
+              remainingSeconds: configuredDurationSeconds
+            }
+          };
+          appendTreeItem(session.rounds, round);
+          session.activeRoundId = roundId;
+          session.updatedAt = timestamp;
+          document.updatedAt = timestamp;
+          result = 'selected';
         });
+        return result;
       },
+      castVotingVote: (sessionId, roundId, vote) => {
+        let result: import('./teamRepository').VotingVoteResult = 'invalid-session';
+        Tree.runTransaction(view, (root) => {
+          const document = root as unknown as IMutableDocumentRoot;
+          const sessionNode = document.sessions.find(
+            (candidate) =>
+              candidate.id === sessionId &&
+              candidate.id === document.openSessionId &&
+              candidate.status === 'Active'
+          );
+          if (sessionNode === undefined) {
+            return;
+          }
+          if (
+            !sessionNode.participants.some((participant) => participant.id === vote.participantId)
+          ) {
+            result = 'participant-required';
+            return;
+          }
+          const round = sessionNode.rounds.find((candidate) => candidate.id === roundId);
+          if (
+            round === undefined ||
+            sessionNode.activeRoundId !== roundId ||
+            round.status !== 'Voting'
+          ) {
+            result = 'invalid-round';
+            return;
+          }
+          if (sessionNode.settings.scaleValues.indexOf(vote.value) < 0) {
+            result = 'invalid-vote';
+            return;
+          }
+          const session = sessionNode as unknown as IMutableVotingSession;
+          const existingVote = round.votes.find(
+            (candidate) => candidate.participantId === vote.participantId
+          );
+          if (existingVote === undefined) {
+            appendTreeItem(round.votes, vote);
+          } else {
+            const mutableVote = existingVote as unknown as IMutableVoteRecord;
+            mutableVote.value = vote.value;
+            mutableVote.castAt = vote.castAt;
+          }
+          session.updatedAt = vote.castAt;
+          document.updatedAt = vote.castAt;
+          result = 'cast';
+        });
+        return result;
+      },
+      updateVotingTimer: (sessionId, roundId, command, currentUser, timestamp) => {
+        let result: import('./teamRepository').VotingTimerResult = 'invalid-session';
+        Tree.runTransaction(view, (root) => {
+          const document = root as unknown as IMutableDocumentRoot;
+          const sessionNode = document.sessions.find(
+            (candidate) =>
+              candidate.id === sessionId &&
+              candidate.id === document.openSessionId &&
+              candidate.status === 'Active'
+          );
+          if (sessionNode === undefined) {
+            return;
+          }
+          if (!document.team.hosts.some((host) => host.objectId === currentUser.objectId)) {
+            result = 'host-required';
+            return;
+          }
+          if (!sessionNode.settings.timerEnabled) {
+            result = 'timer-disabled';
+            return;
+          }
+          const round = sessionNode.rounds.find(
+            (candidate) =>
+              candidate.id === roundId &&
+              candidate.id === sessionNode.activeRoundId &&
+              candidate.status === 'Voting'
+          );
+          if (round === undefined) {
+            result = 'invalid-round';
+            return;
+          }
+          const elapsedMilliseconds =
+            round.timer.status === 'Running' && round.timer.startedAt !== undefined
+              ? Date.parse(timestamp) - Date.parse(round.timer.startedAt)
+              : 0;
+          const elapsedSeconds = Number.isFinite(elapsedMilliseconds)
+            ? Math.max(0, Math.floor(elapsedMilliseconds / 1000))
+            : 0;
+          const remainingSeconds = Math.max(0, round.timer.remainingSeconds - elapsedSeconds);
+          const mutableRound = round as unknown as IMutableVotingRound;
+          if (command === 'reset') {
+            mutableRound.timer = {
+              configuredDurationSeconds: round.timer.configuredDurationSeconds,
+              status: 'Ready',
+              remainingSeconds: round.timer.configuredDurationSeconds,
+              resetAt: timestamp
+            };
+          } else if (command === 'stop') {
+            mutableRound.timer = {
+              configuredDurationSeconds: round.timer.configuredDurationSeconds,
+              status: 'Stopped',
+              remainingSeconds,
+              stoppedAt: timestamp
+            };
+          } else {
+            mutableRound.timer = {
+              configuredDurationSeconds: round.timer.configuredDurationSeconds,
+              status: 'Running',
+              remainingSeconds,
+              startedAt: timestamp
+            };
+          }
+          const session = sessionNode as unknown as IMutableVotingSession;
+          session.updatedAt = timestamp;
+          document.updatedAt = timestamp;
+          result = 'updated';
+        });
+        return result;
+      },
+      setVotingParticipantConnection: setParticipantConnection,
       waitForSaved: () => this.waitForSaved(container),
       subscribe: (listener) => {
         const root = untypedView.root as TreeNode;
         let isSubscribed = true;
         const unsubscribe = Tree.on(root, 'treeChanged', listener);
+        const unsubscribePresenceUpdated = participantPresence.events.on(
+          'remoteUpdated',
+          (update: {
+            attendee: Attendee;
+            value: () => IParticipantPresenceBinding | undefined;
+          }) => {
+            const binding = update.value();
+            if (binding !== undefined) {
+              participantBindings.set(update.attendee, binding);
+              handlePresenceConnected(binding);
+              schedulePresenceReconciliation();
+            }
+          }
+        );
+        const unsubscribePresenceDisconnected = presence.attendees.events.on(
+          'attendeeDisconnected',
+          handlePresenceDisconnected
+        );
+        schedulePresenceReconciliation();
         container.on('connected', listener);
         container.on('disconnected', listener);
         return (): void => {
@@ -452,12 +934,17 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
             unsubscribe();
             container.off('connected', listener);
             container.off('disconnected', listener);
+            unsubscribePresenceUpdated();
+            unsubscribePresenceDisconnected();
           }
         };
       },
       dispose: () => {
         if (!isDisposed) {
           isDisposed = true;
+          if (presenceReconcileTimeoutId !== undefined) {
+            window.clearTimeout(presenceReconcileTimeoutId);
+          }
           view.dispose();
           services.dispose();
           container.dispose();
@@ -602,10 +1089,13 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
   /** @returns Parsed team metadata items from the configured library. */
   private async readTeamItems(): Promise<readonly ITeamItemRecord[]> {
     const hostField = this.field('Hosts');
+    const participantField = this.field('Participants');
     const response = await this.transport.get<unknown>(
       `${this.listPath()}/items?$select=Id,Title,File/Name,${this.field('Team ID')},${this.field(
         'Is Active'
-      )},${this.field('Active Session ID')},${hostField}/Id&$expand=File,${hostField}`
+      )},${this.field(
+        'Active Session ID'
+      )},${hostField}/Id,${participantField}/Id&$expand=File,${hostField},${participantField}`
     );
     return this.unwrapResults(response)
       .map((value) => this.parseTeamItem(value))
@@ -644,6 +1134,7 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
       isActive: Boolean(item[this.field('Is Active')]),
       activeSessionId: this.readString(item[this.field('Active Session ID')]),
       hostIds: this.readPersonIds(item[this.field('Hosts')]),
+      participantIds: this.readPersonIds(item[this.field('Participants')]),
       driveItemId: this.attachedFiles.get(teamId)?.driveItemId
     };
   }

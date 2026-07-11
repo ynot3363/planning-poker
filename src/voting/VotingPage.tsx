@@ -1,14 +1,25 @@
 import * as React from 'react';
+import type { ServiceScope } from '@microsoft/sp-core-library';
 import { DefaultButton, PrimaryButton } from '@fluentui/react/lib/Button';
 import { MessageBar, MessageBarType } from '@fluentui/react/lib/MessageBar';
-import { Persona, PersonaSize } from '@fluentui/react/lib/Persona';
-import { TextField } from '@fluentui/react/lib/TextField';
-import type { PlanningPokerDocumentRoot, VotingSession } from '../domain/planningPokerDomain';
+import { Dialog, DialogFooter, DialogType } from '@fluentui/react/lib/Dialog';
+import { TooltipHost } from '@fluentui/react/lib/Tooltip';
+import type { PlanningPokerDocumentRoot } from '../domain/planningPokerDomain';
 import type { HostedTeamSummary } from '../repository/teamRepository';
 import { ContentCard, StatusState } from '../shell/ShellPrimitives';
-import type { IVotingSessionService, VotingSessionContext } from './sessionManagement';
+import { LivePersona } from '../shell/LivePersona';
+import { RoleGuard } from '../shell/RoleGuard';
+import type {
+  IVotingSessionService,
+  VotingSessionContext,
+  VotingTeamSummary
+} from './sessionManagement';
 import { createSessionShareUrl } from './sessionManagement';
-import { selectParticipation } from './participation';
+import { selectEligibleVotingStories } from './sessionManagement';
+import { normalizeStoryLink } from '../stories/storyManagement';
+import type { NamedParticipantRow } from './participation';
+import { selectCurrentVoteValue, selectParticipation } from './participation';
+import { VotingTimerPanel } from './VotingTimerPanel';
 import styles from './VotingPage.module.scss';
 
 /** Dependencies for the normal and focused Voting destination. */
@@ -16,6 +27,8 @@ export interface IVotingPageProps {
   readonly service: IVotingSessionService;
   readonly teamId?: string;
   readonly sessionId?: string;
+  readonly serviceScope: ServiceScope;
+  readonly webAbsoluteUrl?: string;
   readonly onOpenSession: (teamId: string, sessionId: string) => void;
 }
 
@@ -31,22 +44,27 @@ type CopyState = 'idle' | 'copied' | 'failed';
 export function VotingPage(props: IVotingPageProps): React.ReactElement {
   const isFocused = props.teamId !== undefined && props.sessionId !== undefined;
   const [loadingState, setLoadingState] = React.useState<LoadingState>('loading');
-  const [teams, setTeams] = React.useState<readonly HostedTeamSummary[]>([]);
+  const [teams, setTeams] = React.useState<readonly VotingTeamSummary[]>([]);
   const [context, setContext] = React.useState<VotingSessionContext>();
   const [document, setDocument] = React.useState<PlanningPokerDocumentRoot>();
   const [error, setError] = React.useState<string>();
   const [busyTeamId, setBusyTeamId] = React.useState<string>();
   const [isStarting, setIsStarting] = React.useState(false);
+  const [selectedStoryId, setSelectedStoryId] = React.useState<string>();
+  const [isVotingActionBusy, setIsVotingActionBusy] = React.useState(false);
+  const [isReplaceConfirmationOpen, setIsReplaceConfirmationOpen] = React.useState(false);
   const [copyState, setCopyState] = React.useState<CopyState>('idle');
+  const [previewStoryId, setPreviewStoryId] = React.useState<string>();
 
   React.useEffect(() => {
     let isCurrent = true;
     let opened: VotingSessionContext | undefined;
     let unsubscribe: (() => void) | undefined;
+    let handlePageHide: (() => void) | undefined;
     setLoadingState('loading');
     setError(undefined);
     if (!isFocused) {
-      props.service.listHostedTeams().then(
+      props.service.listVotingTeams().then(
         (value) => {
           if (isCurrent) {
             setTeams(value);
@@ -70,6 +88,8 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
             return;
           }
           opened = value;
+          handlePageHide = () => props.service.markDisconnected(value);
+          window.addEventListener('pagehide', handlePageHide);
           setContext(value);
           setDocument(value.getDocument());
           unsubscribe = props.service.subscribe(value, () => {
@@ -92,11 +112,29 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
     return (): void => {
       isCurrent = false;
       unsubscribe?.();
+      if (handlePageHide !== undefined) {
+        window.removeEventListener('pagehide', handlePageHide);
+      }
       if (opened !== undefined) {
         props.service.closeSession(opened);
       }
     };
   }, [isFocused, props.service, props.sessionId, props.teamId]);
+
+  const synchronizedSession = document?.sessions.find(
+    (candidate) => candidate.id === props.sessionId
+  );
+  const synchronizedActiveStoryId = synchronizedSession?.rounds.find(
+    (round) => round.id === synchronizedSession.activeRoundId
+  )?.storyId;
+  const firstStoryId = document?.stories[0]?.id;
+  React.useEffect(() => {
+    if (synchronizedActiveStoryId !== undefined) {
+      setPreviewStoryId(synchronizedActiveStoryId);
+    } else if (firstStoryId !== undefined) {
+      setPreviewStoryId((current) => current ?? firstStoryId);
+    }
+  }, [firstStoryId, synchronizedActiveStoryId]);
 
   const prepare = async (team: HostedTeamSummary): Promise<void> => {
     setBusyTeamId(team.teamId);
@@ -148,6 +186,65 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
     }
   };
 
+  const chooseStory = async (replaceActive: boolean): Promise<void> => {
+    const storyId = selectedStoryId ?? previewStoryId;
+    if (context === undefined || storyId === undefined) {
+      return;
+    }
+    setIsVotingActionBusy(true);
+    setError(undefined);
+    try {
+      if (replaceActive) {
+        await props.service.replaceStory(context, storyId);
+      } else {
+        await props.service.selectStory(context, storyId);
+      }
+      setSelectedStoryId(undefined);
+      setPreviewStoryId(storyId);
+      setIsReplaceConfirmationOpen(false);
+      setDocument(context.getDocument());
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : 'The active story could not be changed.');
+    } finally {
+      setIsVotingActionBusy(false);
+    }
+  };
+
+  const runTimerAction = async (
+    action: 'startTimer' | 'stopTimer' | 'resetTimer',
+    roundId: string
+  ): Promise<void> => {
+    if (context === undefined) {
+      return;
+    }
+    setIsVotingActionBusy(true);
+    setError(undefined);
+    try {
+      await props.service[action](context, roundId);
+      setDocument(context.getDocument());
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : 'The timer could not be updated.');
+    } finally {
+      setIsVotingActionBusy(false);
+    }
+  };
+
+  const castVote = async (roundId: string, value: string): Promise<void> => {
+    if (context === undefined) {
+      return;
+    }
+    setIsVotingActionBusy(true);
+    setError(undefined);
+    try {
+      await props.service.castVote(context, roundId, value);
+      setDocument(context.getDocument());
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : 'Your vote could not be saved.');
+    } finally {
+      setIsVotingActionBusy(false);
+    }
+  };
+
   if (loadingState === 'loading') {
     return (
       <StatusState
@@ -175,11 +272,11 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
         {teams.length === 0 ? (
           <StatusState
             kind="empty"
-            title="No active hosted teams"
-            description="Create or activate a team before preparing a voting session."
+            title="No voting sessions"
+            description="No hosted teams or open participant sessions are available."
           />
         ) : (
-          <ul className={styles.teamList} aria-label="Active hosted teams">
+          <ul className={styles.teamList} aria-label="Hosted teams and open voting sessions">
             {teams.map((team) => (
               <li key={team.teamId}>
                 <ContentCard label={team.title}>
@@ -188,10 +285,10 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
                     <p>
                       {team.activeSessionId === undefined
                         ? 'No session is open.'
-                        : 'A Lobby or voting session is already open.'}
+                        : `${team.relationship === 'Host' ? 'Hosted' : 'Participant'} session is open.`}
                     </p>
                     <div className={styles.actions}>
-                      {team.activeSessionId === undefined ? (
+                      {team.activeSessionId === undefined && team.relationship === 'Host' ? (
                         <PrimaryButton
                           disabled={busyTeamId !== undefined}
                           onClick={() => prepare(team).catch(() => undefined)}
@@ -233,18 +330,69 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
     session.id
   );
   const participation = selectParticipation(session, context.participantId);
+  const activeRound = session.rounds.find((round) => round.id === session.activeRoundId);
+  const eligibleStories = selectEligibleVotingStories(document, session);
+  const currentVote = selectCurrentVoteValue(session, context.participantId);
+  const canReplaceStory = activeRound?.status === 'Voting' && activeRound.votes.length === 0;
+  const actionsUnavailable = isVotingActionBusy || context.getConnectionState() === 'Disconnected';
+  const previewedSourceStory = document.stories.find((story) => story.id === previewStoryId);
+  const isPreviewingActiveStory = activeRound?.storyId === previewStoryId;
+  const previewedStory =
+    isPreviewingActiveStory && activeRound !== undefined
+      ? {
+          title: activeRound.storySnapshot.title,
+          description: activeRound.storySnapshot.description,
+          link: activeRound.storySnapshot.link,
+          status: `${previewedSourceStory?.status ?? 'Ready'} · Active voting`
+        }
+      : previewedSourceStory;
+  const safeStoryLink =
+    previewedStory?.link === undefined ? undefined : normalizeStoryLink(previewedStory.link).link;
+  const canSelectPreviewedStory =
+    previewedSourceStory !== undefined &&
+    eligibleStories.some((story) => story.id === previewedSourceStory.id);
+  const namedParticipantGroups =
+    participation.mode === 'Named'
+      ? {
+          waiting: participation.rows.filter(
+            (participant) => participant.connection !== 'Disconnected' && !participant.hasVoted
+          ),
+          voted: participation.rows.filter(
+            (participant) => participant.connection !== 'Disconnected' && participant.hasVoted
+          ),
+          disconnected: participation.rows.filter(
+            (participant) => participant.connection === 'Disconnected'
+          )
+        }
+      : undefined;
   return (
-    <ContentCard label={`${context.team.title} voting session`} tone="accent">
-      <div className={styles.sessionCard}>
-        <div className={styles.sessionHeader}>
-          <div>
-            <h2>{context.team.title}</h2>
-            <p>{session.status === 'Lobby' ? 'Voting has not started.' : 'Voting is active.'}</p>
-          </div>
+    <div className={styles.focusedSession}>
+      <header className={styles.sessionHeader}>
+        <div>
+          <h2>
+            {context.team.title} - {session.settings.votingMode} Voting Session
+          </h2>
           <span className={styles.statusBadge} role="status" aria-live="polite">
             {session.status}
           </span>
         </div>
+        <div className={styles.copyAction}>
+          <TooltipHost content={sessionShareUrl} calloutProps={{ gapSpace: 8 }}>
+            <DefaultButton
+              iconProps={{ iconName: copyState === 'copied' ? 'CheckMark' : 'Copy' }}
+              aria-label="Copy voting session URL"
+              title="Copy voting session URL"
+              onClick={() => copySessionLink(sessionShareUrl).catch(() => undefined)}
+            >
+              Copy Url
+            </DefaultButton>
+          </TooltipHost>
+          <span className={styles.copyStatus} role="status" aria-live="polite">
+            {copyState === 'copied' ? 'URL copied' : copyState === 'failed' ? 'Copy failed' : ''}
+          </span>
+        </div>
+      </header>
+      <div className={styles.sessionCard}>
         {error !== undefined && (
           <MessageBar messageBarType={MessageBarType.error}>{error}</MessageBar>
         )}
@@ -253,109 +401,317 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
             Reconnecting to collaboration services. Changes are unavailable while disconnected.
           </MessageBar>
         )}
-        <dl className={styles.details}>
-          <div>
-            <dt>Scale</dt>
-            <dd>{session.settings.scaleValues.join(', ')}</dd>
-          </div>
-          <div>
-            <dt>Voting mode</dt>
-            <dd>{session.settings.votingMode}</dd>
-          </div>
-          <div>
-            <dt>Timer</dt>
-            <dd>{formatTimer(session)}</dd>
-          </div>
-          <div>
-            <dt>Team context</dt>
-            <dd>
-              {context.isHost
-                ? 'Host'
-                : context.isConfiguredMember
-                  ? 'Configured member'
-                  : 'Guest participant'}
-            </dd>
-          </div>
-        </dl>
-        <section className={styles.participation} aria-labelledby="session-participation-heading">
-          <div className={styles.participationHeader}>
-            <div>
-              <h3 id="session-participation-heading">Participants</h3>
-              {participation.mode === 'Anonymous' && participation.currentAlias !== undefined && (
-                <p>Your session alias is {participation.currentAlias}.</p>
-              )}
-            </div>
-            <p className={styles.participationCounts} aria-live="polite" aria-atomic="true">
-              {participation.counts.joined} joined · {participation.counts.voted} voted ·{' '}
-              {participation.counts.remaining} remaining
-            </p>
-          </div>
-          {participation.mode === 'Named' ? (
-            participation.rows.length === 0 ? (
-              <p>No participants have joined yet.</p>
+        <div className={styles.focusedGrid}>
+          <aside className={styles.storyColumn} aria-labelledby="session-stories-heading">
+            <h3 id="session-stories-heading">Stories</h3>
+            {document.stories.length === 0 ? (
+              <p>No stories are available.</p>
             ) : (
-              <ul className={styles.participantList} aria-label="Named session participants">
-                {participation.rows.map((participant) => (
-                  <li key={participant.participantId}>
-                    <Persona
-                      text={participant.displayName}
-                      secondaryText={`${participant.hasVoted ? 'Voted' : 'Not voted'} · ${participant.connection}`}
-                      size={PersonaSize.size32}
-                    />
-                    {participant.isCurrent && <span className={styles.currentBadge}>You</span>}
-                  </li>
-                ))}
+              <ul className={styles.storyList}>
+                {document.stories.map((story) => {
+                  const isActive = story.id === activeRound?.storyId;
+                  const isPreviewed = story.id === previewStoryId;
+                  return (
+                    <li key={story.id}>
+                      <button
+                        type="button"
+                        className={`${styles.storyCard} ${isActive ? styles.activeStoryCard : ''}`}
+                        aria-pressed={isPreviewed}
+                        onClick={() => {
+                          setPreviewStoryId(story.id);
+                          setSelectedStoryId(story.id);
+                        }}
+                      >
+                        <span className={styles.storyCardHeader}>
+                          <span className={styles.storyCardTitle}>{story.title}</span>
+                          <span
+                            className={`${styles.storyCardStatus} ${getStoryStatusTone(story.status, isActive)}`}
+                          >
+                            {story.status}
+                            {isActive ? ' · Active voting' : ''}
+                          </span>
+                        </span>
+                        <span className={styles.storyCardDescription}>{story.description}</span>
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
-            )
-          ) : (
-            <p>
-              Anonymous sessions show aggregate participation only. Other participant aliases and
-              Microsoft 365 identities are hidden.
-            </p>
-          )}
-        </section>
-        {context.isHost && session.status === 'Lobby' && (
-          <div className={styles.actions}>
-            <PrimaryButton
-              disabled={isStarting}
-              onClick={() => startVoting().catch(() => undefined)}
+            )}
+          </aside>
+          <main className={styles.votingColumn}>
+            {previewedStory === undefined ? (
+              <StatusState
+                kind="empty"
+                title="Select a story"
+                description="Choose a story from the list to review its details."
+              />
+            ) : (
+              <section className={styles.storyDetails} aria-labelledby="story-details-heading">
+                <p className={styles.eyebrow}>
+                  {isPreviewingActiveStory ? 'Active story' : 'Story details'}
+                </p>
+                <div className={styles.activeStoryHeader}>
+                  <h3 id="story-details-heading">{previewedStory.title}</h3>
+                  <span
+                    className={`${styles.statusBadge} ${getStoryStatusTone(
+                      previewedStory.status,
+                      isPreviewingActiveStory
+                    )}`}
+                  >
+                    {previewedStory.status}
+                  </span>
+                </div>
+                {previewedStory.description.length > 0 && <p>{previewedStory.description}</p>}
+                {previewedStory.link !== undefined &&
+                  (safeStoryLink === undefined ? (
+                    <p>Story link unavailable.</p>
+                  ) : (
+                    <a href={safeStoryLink} target="_blank" rel="noopener noreferrer">
+                      Open story context
+                    </a>
+                  ))}
+                <RoleGuard
+                  allowed={
+                    context.isHost &&
+                    session.status === 'Active' &&
+                    canSelectPreviewedStory &&
+                    !isPreviewingActiveStory
+                  }
+                >
+                  <PrimaryButton
+                    disabled={actionsUnavailable || (activeRound !== undefined && !canReplaceStory)}
+                    onClick={() => {
+                      if (activeRound === undefined) {
+                        chooseStory(false).catch(() => undefined);
+                      } else {
+                        setIsReplaceConfirmationOpen(true);
+                      }
+                    }}
+                  >
+                    {activeRound === undefined ? 'Start story voting' : 'Replace active story'}
+                  </PrimaryButton>
+                </RoleGuard>
+                {isPreviewingActiveStory && activeRound !== undefined && (
+                  <div className={styles.votingDetails}>
+                    <fieldset className={styles.voteFieldset} disabled={actionsUnavailable}>
+                      <legend>Choose your estimate</legend>
+                      <div className={styles.voteScale}>
+                        {session.settings.scaleValues.map((value) => (
+                          <DefaultButton
+                            key={value}
+                            className={currentVote === value ? styles.selectedVote : undefined}
+                            aria-pressed={currentVote === value}
+                            disabled={
+                              activeRound.status !== 'Voting' || context.participantId === undefined
+                            }
+                            onClick={() => castVote(activeRound.id, value).catch(() => undefined)}
+                          >
+                            {value}
+                          </DefaultButton>
+                        ))}
+                      </div>
+                    </fieldset>
+                    <p
+                      className={styles.voteStatus}
+                      role="status"
+                      aria-live="polite"
+                      aria-atomic="true"
+                    >
+                      {currentVote === undefined
+                        ? 'No vote selected yet.'
+                        : `Your current vote is ${currentVote}. You can change it until reveal.`}
+                    </p>
+                  </div>
+                )}
+              </section>
+            )}
+            {session.status === 'Lobby' && (
+              <RoleGuard allowed={context.isHost}>
+                <PrimaryButton
+                  disabled={isStarting}
+                  onClick={() => startVoting().catch(() => undefined)}
+                >
+                  {isStarting ? 'Starting...' : 'Start voting session'}
+                </PrimaryButton>
+              </RoleGuard>
+            )}
+            {session.status === 'Active' && activeRound === undefined && !context.isHost && (
+              <p role="status">Waiting for the host to select a story.</p>
+            )}
+          </main>
+          <aside className={styles.sessionColumn}>
+            {session.settings.timerEnabled && activeRound !== undefined && (
+              <VotingTimerPanel
+                timer={activeRound.timer}
+                isHost={context.isHost}
+                disabled={actionsUnavailable}
+                onStart={() => runTimerAction('startTimer', activeRound.id).catch(() => undefined)}
+                onStop={() => runTimerAction('stopTimer', activeRound.id).catch(() => undefined)}
+                onReset={() => runTimerAction('resetTimer', activeRound.id).catch(() => undefined)}
+              />
+            )}
+            {session.settings.timerEnabled && activeRound === undefined && (
+              <section className={styles.timerPanel} aria-labelledby="voting-timer-heading">
+                <h3 id="voting-timer-heading">Timer</h3>
+                <p>Ready when a story becomes active.</p>
+              </section>
+            )}
+            <section
+              className={styles.participation}
+              aria-labelledby="session-participation-heading"
             >
-              {isStarting ? 'Starting...' : 'Start voting'}
-            </PrimaryButton>
-          </div>
-        )}
-        <div className={styles.shareLinkRow}>
-          <TextField
-            className={styles.shareLink}
-            label="Session link"
-            value={sessionShareUrl}
-            readOnly
-          />
-          <DefaultButton
-            iconProps={{ iconName: 'Copy' }}
-            aria-live="polite"
-            onClick={() => copySessionLink(sessionShareUrl).catch(() => undefined)}
-          >
-            {copyState === 'copied'
-              ? 'Copied'
-              : copyState === 'failed'
-                ? 'Copy failed'
-                : 'Copy link'}
-          </DefaultButton>
+              <h3 id="session-participation-heading">Participants</h3>
+              <p className={styles.participationCounts} aria-live="polite" aria-atomic="true">
+                {participation.counts.joined} joined · {participation.counts.voted} voted ·{' '}
+                {participation.counts.remaining} remaining · {participation.counts.disconnected}{' '}
+                disconnected
+              </p>
+              {participation.mode === 'Named' ? (
+                participation.rows.length === 0 ? (
+                  <p>No participants have joined yet.</p>
+                ) : (
+                  <div className={styles.participantGroups}>
+                    <NamedParticipantGroup
+                      heading="Not voted"
+                      rows={namedParticipantGroups?.waiting ?? []}
+                      serviceScope={props.serviceScope}
+                      webAbsoluteUrl={props.webAbsoluteUrl}
+                    />
+                    <NamedParticipantGroup
+                      heading="Voted"
+                      rows={namedParticipantGroups?.voted ?? []}
+                      serviceScope={props.serviceScope}
+                      webAbsoluteUrl={props.webAbsoluteUrl}
+                    />
+                    <NamedParticipantGroup
+                      heading="Disconnected"
+                      rows={namedParticipantGroups?.disconnected ?? []}
+                      serviceScope={props.serviceScope}
+                      webAbsoluteUrl={props.webAbsoluteUrl}
+                    />
+                  </div>
+                )
+              ) : (
+                <p>
+                  {participation.currentAlias !== undefined
+                    ? `You are ${participation.currentAlias}. `
+                    : ''}
+                  Participant identities are hidden.
+                </p>
+              )}
+            </section>
+          </aside>
         </div>
+        {isReplaceConfirmationOpen && selectedStoryId !== undefined && (
+          <Dialog
+            hidden={false}
+            dialogContentProps={{
+              type: DialogType.normal,
+              title: 'Replace the active story?',
+              closeButtonAriaLabel: 'Close story replacement confirmation',
+              subText:
+                'The current unvoted round will be cancelled and the selected Ready story will become active.'
+            }}
+            modalProps={{ isBlocking: true }}
+            onDismiss={isVotingActionBusy ? undefined : () => setIsReplaceConfirmationOpen(false)}
+          >
+            <DialogFooter>
+              <PrimaryButton
+                disabled={isVotingActionBusy}
+                onClick={() => chooseStory(true).catch(() => undefined)}
+              >
+                {isVotingActionBusy ? 'Replacing...' : 'Replace story'}
+              </PrimaryButton>
+              <DefaultButton
+                disabled={isVotingActionBusy}
+                onClick={() => setIsReplaceConfirmationOpen(false)}
+              >
+                Cancel
+              </DefaultButton>
+            </DialogFooter>
+          </Dialog>
+        )}
       </div>
-    </ContentCard>
+    </div>
+  );
+}
+
+interface INamedParticipantGroupProps {
+  readonly heading: string;
+  readonly rows: readonly NamedParticipantRow[];
+  readonly serviceScope: ServiceScope;
+  readonly webAbsoluteUrl: string | undefined;
+}
+
+/**
+ * Renders one mutually exclusive named-participant state group.
+ *
+ * @param props - Group heading, participant rows, and persona context.
+ * @returns A consistently labeled participant group.
+ */
+function NamedParticipantGroup(props: INamedParticipantGroupProps): React.ReactElement {
+  return (
+    <section className={styles.participantGroup} aria-label={`${props.heading} participants`}>
+      <h4>
+        {props.heading} <span>({props.rows.length})</span>
+      </h4>
+      {props.rows.length === 0 ? (
+        <p className={styles.emptyParticipantGroup}>None</p>
+      ) : (
+        <ul className={styles.participantList}>
+          {props.rows.map((participant) => (
+            <li key={participant.participantId}>
+              <div>
+                <LivePersona
+                  displayName={participant.displayName}
+                  upn={participant.upn}
+                  imageUrl={createUserPhotoUrl(props.webAbsoluteUrl, participant.upn)}
+                  serviceScope={props.serviceScope}
+                  ariaLabel={`${participant.displayName}, session participant`}
+                />
+                <span className={styles.participantStatus}>
+                  {participant.hasVoted ? 'Voted' : 'Not voted'} · {participant.connection}
+                </span>
+              </div>
+              {participant.isCurrent && <span className={styles.currentBadge}>You</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 
 /**
- * @param session - Session whose settings are displayed.
- * @returns A concise minute-based timer description.
+ * Selects a visual tone for a story status without changing its visible label.
+ *
+ * @param status - Story status text shown in the pill.
+ * @param isActive - Whether this story is the active voting round.
+ * @returns The CSS class for the status tone.
  */
-function formatTimer(session: VotingSession): string {
-  if (!session.settings.timerEnabled || session.settings.timerDurationSeconds === undefined) {
-    return 'Off';
+function getStoryStatusTone(status: string, isActive: boolean): string {
+  if (isActive) {
+    return styles.storyStatusActive;
   }
-  const minutes = session.settings.timerDurationSeconds / 60;
-  return `${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`;
+  if (status.startsWith('Pointed')) {
+    return styles.storyStatusPointed;
+  }
+  if (status.startsWith('Archived')) {
+    return styles.storyStatusArchived;
+  }
+  return styles.storyStatusReady;
+}
+
+/**
+ * Builds the same-site SharePoint user-photo endpoint used by the application shell.
+ *
+ * @param webAbsoluteUrl - Current SharePoint web URL.
+ * @param upn - Named participant user principal name.
+ * @returns The encoded profile photo URL when host context is available.
+ */
+function createUserPhotoUrl(webAbsoluteUrl: string | undefined, upn: string): string | undefined {
+  return webAbsoluteUrl === undefined || upn.length === 0
+    ? undefined
+    : `${webAbsoluteUrl.replace(/\/$/, '')}/_layouts/15/userphoto.aspx?size=S&accountname=${encodeURIComponent(upn)}`;
 }

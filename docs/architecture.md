@@ -235,6 +235,34 @@ Recommended UI pattern:
 
 This keeps React components simpler and makes export/debug behavior much easier.
 
+### Planning Poker Round Mutations
+
+Active-story selection and vote upserts must use document-store transaction
+commands rather than replacing a session assembled from a stale UI snapshot.
+The transaction rechecks the open Active session, current round, participant or
+host authority, story lifecycle, and immutable session scale before mutation.
+Round selection captures story content and updates `activeRoundId` atomically;
+votes are keyed by participant ID so changing a selection replaces one record.
+
+React must use privacy-shaped selectors before reveal: the current participant
+may see their own value, Named mode may show voted/not-voted state, and
+Anonymous mode may show aggregate counts. Per-vote operations remain Fluid-only
+and must not trigger SharePoint metadata writes. See
+`docs/active-story-voting.md` for the complete feature contract.
+
+### Planning Poker Presence
+
+Use Fluid Presence attendee state for session-lifetime participant bindings.
+Presence publishes only opaque session and participant IDs plus Named/Anonymous
+mode; it does not persist Microsoft 365 identity-to-alias mappings in
+SharedTree. Service heartbeat/attendee-disconnect events keep Named roster
+entries as Disconnected while excluding them from remaining-voter counts.
+Anonymous attendee disconnect removes that roster entry and its active
+unrevealed vote. Cache the latest attendee binding because the departing
+attendee's remote state may no longer be readable when its disconnect event is
+handled, and reconcile the open roster against connected Presence attendees
+after Presence changes. Do not implement a parallel polling heartbeat.
+
 ## Required Libraries
 
 For the Fluid + SharePoint ODSP pattern:

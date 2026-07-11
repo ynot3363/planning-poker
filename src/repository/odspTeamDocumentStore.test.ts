@@ -1,5 +1,8 @@
 const mockCreateContainer = jest.fn();
 const mockGetContainer = jest.fn();
+const mockPresenceListeners = new Map<string, (value: unknown) => void>();
+const mockPresenceBindings = new Map<object, unknown>();
+const mockPresenceAttendees = new Set<object>();
 jest.mock('@fluidframework/odsp-client/beta', () => ({
   OdspClient: class OdspClient {
     public createContainer(...args: unknown[]): Promise<unknown> {
@@ -10,6 +13,38 @@ jest.mock('@fluidframework/odsp-client/beta', () => ({
       return mockGetContainer(...args) as Promise<unknown>;
     }
   }
+}));
+jest.mock('fluid-framework', () => ({
+  getPresence: jest.fn(() => ({
+    attendees: {
+      getMyself: jest.fn(() => ({ getConnectionStatus: () => 'Connected' })),
+      events: {
+        on: jest.fn((eventName: string, listener: (value: unknown) => void) => {
+          mockPresenceListeners.set(eventName, listener);
+          return () => mockPresenceListeners.delete(eventName);
+        })
+      }
+    },
+    states: {
+      getWorkspace: jest.fn(() => ({
+        states: {
+          participant: {
+            local: { sessionId: '', participantId: '', mode: 'None' },
+            events: {
+              on: jest.fn((eventName: string, listener: (value: unknown) => void) => {
+                mockPresenceListeners.set(eventName, listener);
+                return () => mockPresenceListeners.delete(eventName);
+              })
+            },
+            getRemote: jest.fn((attendee: object) => ({
+              value: () => mockPresenceBindings.get(attendee)
+            })),
+            getStateAttendees: jest.fn(() => Array.from(mockPresenceAttendees))
+          }
+        }
+      }))
+    }
+  }))
 }));
 
 import { Tree } from '@fluidframework/tree';
@@ -68,6 +103,11 @@ function createTransport(
 }
 
 describe('OdspTeamDocumentStore', () => {
+  beforeEach(() => {
+    mockPresenceListeners.clear();
+    mockPresenceBindings.clear();
+    mockPresenceAttendees.clear();
+  });
   it('uses separate SharePoint and push-channel token audiences', async () => {
     const getToken = jest.fn(async () => 'aad-token');
     const provider = createOdspTokenProvider(storage.webAbsoluteUrl, getToken);
@@ -89,7 +129,8 @@ describe('OdspTeamDocumentStore', () => {
             File: { Name: 'Example Team.fluid' },
             PlanningPokerTeamID: fixtureDocument.team.id,
             PlanningPokerIsActive: true,
-            PlanningPokerHosts: [{ Id: 17 }]
+            PlanningPokerHosts: [{ Id: 17 }],
+            PlanningPokerParticipants: [{ Id: 18 }]
           },
           {
             Id: 13,
@@ -97,7 +138,8 @@ describe('OdspTeamDocumentStore', () => {
             File: { Name: 'Other Team.fluid' },
             PlanningPokerTeamID: 'other-team',
             PlanningPokerIsActive: true,
-            PlanningPokerHosts: [{ Id: 99 }]
+            PlanningPokerHosts: [{ Id: 99 }],
+            PlanningPokerParticipants: [{ Id: 17 }]
           }
         ]
       };
@@ -114,6 +156,9 @@ describe('OdspTeamDocumentStore', () => {
       }
     ]);
     expect(driveService.getByPath).toHaveBeenCalledWith('drive-id', 'Example Team.fluid');
+    await expect(
+      store.listParticipatingIn({ ...fixtureUser, sharePointUserId: 17 })
+    ).resolves.toEqual([expect.objectContaining({ teamId: 'other-team', title: 'Other Team' })]);
   });
 
   it('projects resolved people and discovery fields to the SharePoint list item', async () => {
@@ -223,6 +268,195 @@ describe('OdspTeamDocumentStore', () => {
     ).toMatchObject({ id: 'participant-1', kind: 'Named' });
     expect((root as PlanningPokerDocumentRoot).sessions).toBe(sessionsBeforeJoin);
     expect(handle.getSnapshot().sessions[0].participants).toHaveLength(1);
+    const readyStory = {
+      id: 'story-1',
+      teamId: fixtureDocument.team.id,
+      title: 'Transactional story',
+      description: 'A synchronized round.',
+      status: 'Ready' as const,
+      estimateHistory: [],
+      createdAt: fixtureDocument.createdAt,
+      createdBy: fixtureUser,
+      updatedAt: fixtureDocument.updatedAt,
+      updatedBy: fixtureUser
+    };
+    handle.updateStories(
+      [readyStory, { ...readyStory, id: 'story-2', title: 'Replacement story' }],
+      fixtureDocument.updatedAt
+    );
+    handle.updateSessions(
+      [{ ...handle.getSnapshot().sessions[0], status: 'Active' }],
+      lobby.id,
+      fixtureDocument.updatedAt
+    );
+    expect(
+      handle.selectVotingStory(
+        lobby.id,
+        readyStory.id,
+        'round-1',
+        fixtureUser,
+        false,
+        fixtureDocument.updatedAt
+      )
+    ).toBe('selected');
+    expect(
+      handle.selectVotingStory(
+        lobby.id,
+        'story-2',
+        'round-2',
+        fixtureUser,
+        true,
+        fixtureDocument.updatedAt
+      )
+    ).toBe('selected');
+    expect(handle.getSnapshot().sessions[0].rounds[0].status).toBe('Cancelled');
+    expect(
+      handle.castVotingVote(lobby.id, 'round-2', {
+        participantId: 'participant-1',
+        value: '3',
+        castAt: fixtureDocument.updatedAt
+      })
+    ).toBe('cast');
+    expect(
+      handle.castVotingVote(lobby.id, 'round-2', {
+        participantId: 'participant-1',
+        value: '5',
+        castAt: fixtureDocument.updatedAt
+      })
+    ).toBe('cast');
+    expect(handle.getSnapshot().sessions[0].rounds[1].votes).toEqual([
+      expect.objectContaining({ participantId: 'participant-1', value: '5' })
+    ]);
+    expect(
+      handle.castVotingVote(lobby.id, 'round-1', {
+        participantId: 'participant-1',
+        value: '8',
+        castAt: fixtureDocument.updatedAt
+      })
+    ).toBe('invalid-round');
+    expect(
+      handle.updateVotingTimer(
+        lobby.id,
+        'round-2',
+        'start',
+        fixtureUser,
+        '2026-07-10T00:01:00.000Z'
+      )
+    ).toBe('updated');
+    expect(handle.getSnapshot().sessions[0].rounds[1].timer.status).toBe('Running');
+    expect(
+      handle.updateVotingTimer(lobby.id, 'round-2', 'stop', fixtureUser, '2026-07-10T00:01:30.000Z')
+    ).toBe('updated');
+    expect(handle.getSnapshot().sessions[0].rounds[1].timer).toMatchObject({
+      status: 'Stopped',
+      remainingSeconds: 270
+    });
+    const currentSession = handle.getSnapshot().sessions[0];
+    handle.updateSessions(
+      [
+        {
+          ...currentSession,
+          settings: { ...currentSession.settings, votingMode: 'Anonymous' },
+          participants: [
+            {
+              kind: 'Anonymous',
+              id: 'anonymous-presence',
+              alias: 'Participant 1',
+              joinedAt: fixtureDocument.createdAt,
+              presence: {
+                connection: 'Connected',
+                lastSeenAt: fixtureDocument.updatedAt
+              }
+            }
+          ],
+          rounds: currentSession.rounds.map((round) =>
+            round.id === currentSession.activeRoundId
+              ? {
+                  ...round,
+                  votes: [
+                    {
+                      participantId: 'anonymous-presence',
+                      value: '5',
+                      castAt: fixtureDocument.updatedAt
+                    }
+                  ]
+                }
+              : round
+          )
+        }
+      ],
+      lobby.id,
+      fixtureDocument.updatedAt
+    );
+    const treeOn = jest.spyOn(Tree, 'on').mockReturnValue(jest.fn());
+    const unsubscribePresence = handle.subscribe(jest.fn());
+    const disconnectedAttendee = {
+      getConnectionStatus: () => 'Disconnected',
+      getConnectionId: () => 'connection-1',
+      attendeeId: 'attendee-1'
+    };
+    mockPresenceBindings.set(disconnectedAttendee, {
+      sessionId: lobby.id,
+      participantId: 'anonymous-presence',
+      mode: 'Anonymous'
+    });
+    mockPresenceAttendees.add(disconnectedAttendee);
+
+    mockPresenceListeners.get('attendeeDisconnected')?.(disconnectedAttendee);
+
+    expect(handle.getSnapshot().sessions[0].participants).toHaveLength(0);
+    expect(handle.getSnapshot().sessions[0].rounds[1].votes).toHaveLength(0);
+    const anonymousRemovedSession = handle.getSnapshot().sessions[0];
+    handle.updateSessions(
+      [
+        {
+          ...anonymousRemovedSession,
+          settings: { ...anonymousRemovedSession.settings, votingMode: 'Named' },
+          participants: [
+            {
+              kind: 'Named',
+              id: 'named-presence',
+              user: fixtureUser,
+              joinedAt: fixtureDocument.createdAt,
+              presence: {
+                connection: 'Connected',
+                lastSeenAt: fixtureDocument.updatedAt
+              }
+            }
+          ]
+        }
+      ],
+      lobby.id,
+      fixtureDocument.updatedAt
+    );
+    const disconnectedNamedAttendee = {
+      getConnectionStatus: () => 'Disconnected',
+      getConnectionId: () => 'connection-2',
+      attendeeId: 'attendee-2'
+    };
+    mockPresenceBindings.set(disconnectedNamedAttendee, {
+      sessionId: lobby.id,
+      participantId: 'named-presence',
+      mode: 'Named'
+    });
+    mockPresenceAttendees.add(disconnectedNamedAttendee);
+
+    mockPresenceListeners.get('remoteUpdated')?.({
+      attendee: disconnectedNamedAttendee,
+      value: () => mockPresenceBindings.get(disconnectedNamedAttendee)
+    });
+    mockPresenceBindings.delete(disconnectedNamedAttendee);
+
+    mockPresenceListeners.get('attendeeDisconnected')?.(disconnectedNamedAttendee);
+
+    expect(handle.getSnapshot().sessions[0].participants).toEqual([
+      expect.objectContaining({
+        id: 'named-presence',
+        presence: expect.objectContaining({ connection: 'Disconnected' })
+      })
+    ]);
+    unsubscribePresence();
+    treeOn.mockRestore();
     runTransaction.mockRestore();
     await expect(handle.waitForSaved()).resolves.toBeUndefined();
     await store.updateMetadata({

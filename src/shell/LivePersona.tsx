@@ -36,6 +36,8 @@ export interface ILivePersonaProps {
   readonly hideDetails?: boolean;
   /** Optional CSS class applied to the Persona and live-card target. */
   readonly className?: string;
+  /** Accessible label; defaults to the signed-in-user wording used by the shell. */
+  readonly ariaLabel?: string;
 }
 
 /**
@@ -94,7 +96,7 @@ export function LivePersona(props: ILivePersonaProps): React.ReactElement {
       className={props.className}
       text={props.displayName}
       title={props.displayName}
-      aria-label={`Signed in as ${props.displayName}`}
+      aria-label={props.ariaLabel ?? `Signed in as ${props.displayName}`}
       imageUrl={props.imageUrl}
       imageAlt={`${props.displayName}'s profile photo`}
       size={PersonaSize.size32}

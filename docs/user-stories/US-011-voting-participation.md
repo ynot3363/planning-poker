@@ -14,10 +14,12 @@ allocate stable session aliases in join order (`Participant 1`, `Participant
 2`, and so on), never publish or persist an authenticated identity mapping, and
 show other users and hosts only aggregate participation counts.
 
-The eligible voter set is the set of participants who have joined the session,
-not every configured team member. A disconnected joined participant remains in
-the session roster and may reconnect; the host's manual reveal option prevents
-a disconnected voter from blocking a session indefinitely.
+The eligible voter set is the set of connected participants who have joined the
+session, not every configured team member. Fluid Presence supplies ephemeral
+heartbeat/attendee state without persisting an identity-to-alias mapping.
+Disconnected Named participants remain visible but do not count as waiting;
+disconnected Anonymous participants and their active unrevealed votes are
+removed because their ephemeral attendee has left.
 
 ## Public API
 
@@ -27,6 +29,7 @@ Provide typed operations for:
 - anonymous join/rejoin keyed by a browser-scoped opaque random token that is
   never stored in shared Fluid state;
 - synchronized joined and connection/presence state;
+- ephemeral participant binding through Fluid Presence;
 - current participant's local display identity;
 - aggregate total/voted counts;
 - named-mode participant rows with voted/not-voted state but no vote value.
@@ -50,15 +53,19 @@ Provide typed operations for:
 - A random reconnect token may be kept in browser session storage for this
   session only; it contains no identity, is never placed in the URL or Fluid
   state, and is cleared when the session ends.
-- Refresh in the same browser session reclaims the existing anonymous alias;
-  loss of the opaque token creates a new anonymous participant and this
-  limitation is documented.
+- Refresh in the same browser session reuses the opaque participant ID when
+  possible; if Presence already removed that attendee, join recreates the
+  participant and may allocate a new alias.
 - Configured members and ad hoc authenticated link invitees use the same join
   flow; configured members who have not joined do not count as remaining votes.
 - Hosts may also join as voters, but host capabilities and voter participation
   are distinct states.
-- Connection loss updates presence without deleting the durable joined record
-  or vote. Technical presence changes do not expose anonymous identity.
+- Audience/Presence heartbeat loss marks a Named participant Disconnected only
+  after their last Fluid attendee disconnects. Disconnected Named participants
+  remain visible, retain any vote, and do not count as waiting for reveal.
+- Audience/Presence heartbeat loss removes an Anonymous participant and their
+  active unrevealed vote. The ephemeral binding contains only session,
+  participant, and mode identifiers and is never persisted in SharedTree.
 - Lobby participants cannot vote; Active participants receive the voting UI
   only when a Ready story round is active.
 - Roster/count changes use accessible live announcements without excessive
@@ -70,8 +77,8 @@ Provide typed operations for:
   behavior, aggregate counts, and eligible-voter derivation.
 - Privacy tests recursively inspect anonymous persisted fixtures/snapshots and
   fail if authenticated identity fields or values appear.
-- Concurrent-client tests verify unique sequential aliases and synchronized
-  named/aggregate participation.
+- Concurrent-client tests verify unique sequential aliases, named disconnect,
+  anonymous attendee removal, and synchronized aggregate participation.
 - Component-test named personas, anonymous count-only UI, local alias, Lobby,
   Active, reconnect, disconnected, host-as-voter, and empty roster states.
 - Test that vote values remain absent from pre-reveal named participation output.
@@ -81,8 +88,8 @@ Provide typed operations for:
 - Explain what Named and Anonymous mean, including the anonymous reconnect
   limitation and the fact that anonymity is an application data/UI contract,
   not network-level anonymity from Microsoft 365 services.
-- Add examples for named roster, anonymous host counts, anonymous participant
-  alias, and reconnect states.
+- Add examples for named connected/disconnected rows, anonymous host counts,
+  anonymous participant removal, and reconnect states.
 
 ## Dependencies
 
@@ -93,5 +100,6 @@ Provide typed operations for:
 
 - Never derive an anonymous alias from name, email, object ID, hash of identity,
   connection ID that can be correlated externally, or join-link parameter.
-- Keep presence adapters separate from durable domain records and dispose them
-  with the session view.
+- Publish only the opaque session ID, participant ID, and voting mode through
+  Fluid Presence. Keep Presence adapters separate from durable domain records
+  and dispose them with the session view.

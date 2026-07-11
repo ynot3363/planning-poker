@@ -1,6 +1,7 @@
 import type {
   ConnectionState,
   PlanningPokerDocumentRoot,
+  PointingStory,
   SessionParticipant,
   UserReference,
   VotingSession
@@ -18,6 +19,12 @@ export type VotingSessionErrorCode =
   | 'invalid-session'
   | 'ended-session'
   | 'host-required'
+  | 'participant-required'
+  | 'invalid-story'
+  | 'active-round'
+  | 'round-has-votes'
+  | 'invalid-round'
+  | 'invalid-vote'
   | 'save-failure';
 
 /** An expected session workflow failure containing only safe UI text. */
@@ -48,13 +55,30 @@ export interface VotingSessionContext {
   getConnectionState(): ConnectionState;
 }
 
+/** Team entry shown on Voting with the current user's application relationship. */
+export interface VotingTeamSummary extends HostedTeamSummary {
+  readonly relationship: 'Host' | 'Participant';
+}
+
 /** Session-entry operations consumed by normal and focused Voting views. */
 export interface IVotingSessionService {
   listHostedTeams(): Promise<readonly HostedTeamSummary[]>;
+  listVotingTeams(): Promise<readonly VotingTeamSummary[]>;
   prepareSession(team: HostedTeamSummary): Promise<VotingSessionContext>;
   joinSession(teamId: string, sessionId: string): Promise<VotingSessionContext>;
   startVoting(context: VotingSessionContext): Promise<VotingSession>;
+  selectStory(context: VotingSessionContext, storyId: string): Promise<VotingSession>;
+  replaceStory(context: VotingSessionContext, storyId: string): Promise<VotingSession>;
+  castVote(
+    context: VotingSessionContext,
+    roundId: string,
+    scaleValue: string
+  ): Promise<VotingSession>;
+  startTimer(context: VotingSessionContext, roundId: string): Promise<VotingSession>;
+  stopTimer(context: VotingSessionContext, roundId: string): Promise<VotingSession>;
+  resetTimer(context: VotingSessionContext, roundId: string): Promise<VotingSession>;
   subscribe(context: VotingSessionContext, listener: () => void): () => void;
+  markDisconnected(context: VotingSessionContext): void;
   closeSession(context: VotingSessionContext): void;
 }
 
@@ -88,8 +112,32 @@ export function createSessionShareUrl(
   return url.toString();
 }
 
+/**
+ * Selects Ready stories not already finalized in this immutable session history.
+ *
+ * @param document - Current synchronized team document.
+ * @param session - Active session whose history defines exclusions.
+ * @returns Eligible stories in the team's durable order.
+ */
+export function selectEligibleVotingStories(
+  document: PlanningPokerDocumentRoot,
+  session: VotingSession
+): readonly PointingStory[] {
+  const finalizedStoryIds = new Set(
+    session.rounds
+      .filter((round) => session.finalizedRoundIds.indexOf(round.id) >= 0)
+      .map((round) => round.storyId)
+  );
+  const activeStoryId = session.rounds.find((round) => round.id === session.activeRoundId)?.storyId;
+  return document.stories.filter(
+    (story) =>
+      story.status === 'Ready' && story.id !== activeStoryId && !finalizedStoryIds.has(story.id)
+  );
+}
+
 /** Coordinates synchronized Lobby creation and entry over one team Fluid document. */
 export class VotingSessionService implements IVotingSessionService {
+  private readonly closingHandles = new Set<TeamDocumentHandle>();
   /**
    * @param repository - Configured SharePoint and Fluid repository.
    * @param currentUser - Current delegated user.
@@ -110,6 +158,24 @@ export class VotingSessionService implements IVotingSessionService {
     return (await this.repository.listHostedTeams(this.currentUser)).filter(
       (team) => team.isActive
     );
+  }
+
+  /** @inheritdoc */
+  public async listVotingTeams(): Promise<readonly VotingTeamSummary[]> {
+    const [hostedTeams, participantTeams] = await Promise.all([
+      this.repository.listHostedTeams(this.currentUser),
+      this.repository.listParticipatingTeams(this.currentUser)
+    ]);
+    const teams = new Map<string, VotingTeamSummary>();
+    hostedTeams
+      .filter((team) => team.isActive)
+      .forEach((team) => teams.set(team.teamId, { ...team, relationship: 'Host' }));
+    participantTeams
+      .filter(
+        (team) => team.isActive && team.activeSessionId !== undefined && !teams.has(team.teamId)
+      )
+      .forEach((team) => teams.set(team.teamId, { ...team, relationship: 'Participant' }));
+    return Array.from(teams.values());
   }
 
   /** @inheritdoc */
@@ -248,6 +314,63 @@ export class VotingSessionService implements IVotingSessionService {
   }
 
   /** @inheritdoc */
+  public async selectStory(context: VotingSessionContext, storyId: string): Promise<VotingSession> {
+    return this.selectOrReplaceStory(context, storyId, false);
+  }
+
+  /** @inheritdoc */
+  public async replaceStory(
+    context: VotingSessionContext,
+    storyId: string
+  ): Promise<VotingSession> {
+    return this.selectOrReplaceStory(context, storyId, true);
+  }
+
+  /** @inheritdoc */
+  public async castVote(
+    context: VotingSessionContext,
+    roundId: string,
+    scaleValue: string
+  ): Promise<VotingSession> {
+    const participantId = context.participantId;
+    if (participantId === undefined) {
+      throw new VotingSessionError(
+        'participant-required',
+        'Join this voting session before casting a vote.'
+      );
+    }
+    try {
+      const result = context.handle.castVotingVote(context.getSession().id, roundId, {
+        participantId,
+        value: scaleValue,
+        castAt: this.now()
+      });
+      if (result !== 'cast') {
+        throw this.createVoteMutationError(result);
+      }
+      await context.handle.waitForSaved();
+      return context.getSession();
+    } catch (error: unknown) {
+      throw this.normalizeError(error);
+    }
+  }
+
+  /** @inheritdoc */
+  public async startTimer(context: VotingSessionContext, roundId: string): Promise<VotingSession> {
+    return this.runTimerCommand(context, roundId, 'start');
+  }
+
+  /** @inheritdoc */
+  public async stopTimer(context: VotingSessionContext, roundId: string): Promise<VotingSession> {
+    return this.runTimerCommand(context, roundId, 'stop');
+  }
+
+  /** @inheritdoc */
+  public async resetTimer(context: VotingSessionContext, roundId: string): Promise<VotingSession> {
+    return this.runTimerCommand(context, roundId, 'reset');
+  }
+
+  /** @inheritdoc */
   public subscribe(context: VotingSessionContext, listener: () => void): () => void {
     return context.handle.subscribe(() => {
       const session = context.getSession();
@@ -275,7 +398,156 @@ export class VotingSessionService implements IVotingSessionService {
 
   /** @inheritdoc */
   public closeSession(context: VotingSessionContext): void {
-    context.handle.dispose();
+    if (this.closingHandles.has(context.handle)) {
+      return;
+    }
+    this.closingHandles.add(context.handle);
+    const participantId = context.participantId;
+    if (participantId !== undefined) {
+      this.markDisconnected(context);
+    }
+    const dispose = (): void => {
+      context.handle.dispose();
+      this.closingHandles.delete(context.handle);
+    };
+    // eslint-disable-next-line no-void -- Close owns save completion and always disposes its handle.
+    void context.handle.waitForSaved().then(dispose, dispose);
+  }
+
+  /** @inheritdoc */
+  public markDisconnected(context: VotingSessionContext): void {
+    if (context.participantId === undefined) {
+      return;
+    }
+    context.handle.setVotingParticipantConnection(
+      context.getSession().id,
+      context.participantId,
+      'Disconnected',
+      this.now()
+    );
+  }
+
+  /**
+   * Runs one host timer command and waits for Fluid save acknowledgement.
+   *
+   * @param context - Verified live session context.
+   * @param roundId - Current active round identifier.
+   * @param command - Host timer transition to apply.
+   * @returns The synchronized session after save acknowledgement.
+   */
+  private async runTimerCommand(
+    context: VotingSessionContext,
+    roundId: string,
+    command: import('../repository/teamRepository').VotingTimerCommand
+  ): Promise<VotingSession> {
+    try {
+      const result = context.handle.updateVotingTimer(
+        context.getSession().id,
+        roundId,
+        command,
+        this.currentUser,
+        this.now()
+      );
+      if (result !== 'updated') {
+        const messages = {
+          'invalid-session': 'This voting session is no longer active.',
+          'host-required': 'Only a current team host can control the timer.',
+          'invalid-round': 'The timer belongs to a different active story.',
+          'timer-disabled': 'This voting session does not use a timer.'
+        } as const;
+        const code = result === 'host-required' ? 'host-required' : 'invalid-round';
+        throw new VotingSessionError(code, messages[result]);
+      }
+      await context.handle.waitForSaved();
+      return context.getSession();
+    } catch (error: unknown) {
+      throw this.normalizeError(error);
+    }
+  }
+
+  /**
+   * Applies host selection through the store's authoritative transaction guards.
+   *
+   * @param context - Verified live session context.
+   * @param storyId - Ready story selected by the host.
+   * @param replaceActive - Whether an unvoted active round may be cancelled and replaced.
+   * @returns The synchronized session after save acknowledgement.
+   */
+  private async selectOrReplaceStory(
+    context: VotingSessionContext,
+    storyId: string,
+    replaceActive: boolean
+  ): Promise<VotingSession> {
+    const timestamp = this.now();
+    try {
+      const result = context.handle.selectVotingStory(
+        context.getSession().id,
+        storyId,
+        this.createId(),
+        this.currentUser,
+        replaceActive,
+        timestamp
+      );
+      if (result !== 'selected') {
+        const errors = {
+          'invalid-session': new VotingSessionError(
+            'invalid-session',
+            'This voting session is no longer active.'
+          ),
+          'host-required': new VotingSessionError(
+            'host-required',
+            'Only a current team host can select the active story.'
+          ),
+          'invalid-story': new VotingSessionError(
+            'invalid-story',
+            'Select an available Ready story.'
+          ),
+          'active-round': new VotingSessionError(
+            'active-round',
+            'A story is already active for voting.'
+          ),
+          'round-has-votes': new VotingSessionError(
+            'round-has-votes',
+            'The active story cannot be replaced after voting begins.'
+          )
+        } as const;
+        throw errors[result];
+      }
+      await context.handle.waitForSaved();
+      return context.getSession();
+    } catch (error: unknown) {
+      throw this.normalizeError(error);
+    }
+  }
+
+  /**
+   * Maps store vote guards to stable, privacy-safe UI failures.
+   *
+   * @param result - Expected rejected vote transaction outcome.
+   * @returns A stable user-facing session error.
+   */
+  private createVoteMutationError(
+    result: Exclude<ReturnType<TeamDocumentHandle['castVotingVote']>, 'cast'>
+  ): VotingSessionError {
+    switch (result) {
+      case 'participant-required':
+        return new VotingSessionError(
+          'participant-required',
+          'Join this voting session before casting a vote.'
+        );
+      case 'invalid-vote':
+        return new VotingSessionError('invalid-vote', 'Select a value from this session scale.');
+      case 'invalid-round':
+        return new VotingSessionError(
+          'invalid-round',
+          'Voting has moved to another story. Select your vote again.'
+        );
+      default:
+        return new VotingSessionError(
+          'invalid-session',
+          'This voting session is no longer active.'
+        );
+    }
   }
 
   /**

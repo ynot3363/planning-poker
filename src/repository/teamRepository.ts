@@ -4,6 +4,7 @@ import type {
   PointingStory,
   SessionParticipant,
   UserReference,
+  VoteRecord,
   VotingSession
 } from '../domain/planningPokerDomain';
 import type { IPlanningPokerStorageConfiguration } from '../storage/storageTypes';
@@ -69,6 +70,34 @@ export type SessionParticipantJoin =
       readonly participantId: string;
     };
 
+/** Expected outcomes from the transaction that selects an active voting story. */
+export type VotingStorySelectionResult =
+  | 'selected'
+  | 'invalid-session'
+  | 'host-required'
+  | 'invalid-story'
+  | 'active-round'
+  | 'round-has-votes';
+
+/** Expected outcomes from the transaction that upserts a participant vote. */
+export type VotingVoteResult =
+  | 'cast'
+  | 'invalid-session'
+  | 'participant-required'
+  | 'invalid-round'
+  | 'invalid-vote';
+
+/** Host timer commands accepted by the active-round transaction. */
+export type VotingTimerCommand = 'start' | 'stop' | 'reset';
+
+/** Expected outcomes from a synchronized timer command. */
+export type VotingTimerResult =
+  | 'updated'
+  | 'invalid-session'
+  | 'host-required'
+  | 'invalid-round'
+  | 'timer-disabled';
+
 /** Owns one loaded Fluid document and its subscription lifecycle. */
 export interface TeamDocumentHandle {
   /** The stable team identifier. */
@@ -128,6 +157,27 @@ export interface TeamDocumentHandle {
     timestamp: string
   ): SessionParticipant | undefined;
   /**
+   * Selects or replaces the active story while rechecking host, lifecycle, and eligibility guards.
+   */
+  selectVotingStory(
+    sessionId: string,
+    storyId: string,
+    roundId: string,
+    currentUser: UserReference,
+    replaceActive: boolean,
+    timestamp: string
+  ): VotingStorySelectionResult;
+  /** Upserts one joined participant's vote after rechecking the active round and scale snapshot. */
+  castVotingVote(sessionId: string, roundId: string, vote: VoteRecord): VotingVoteResult;
+  /** Applies one host timer command after rechecking the current active round. */
+  updateVotingTimer(
+    sessionId: string,
+    roundId: string,
+    command: VotingTimerCommand,
+    currentUser: UserReference,
+    timestamp: string
+  ): VotingTimerResult;
+  /**
    * Updates technical participant presence without deleting durable roster or vote state.
    *
    * @param sessionId - Open session identifier.
@@ -164,6 +214,13 @@ export interface ITeamDocumentStore {
    * @returns Team summaries whose host metadata contains the user.
    */
   listHostedBy(currentUser: UserReference): Promise<readonly HostedTeamSummary[]>;
+  /**
+   * Queries configured-participant metadata for the supplied user.
+   *
+   * @param currentUser - The user whose configured teams should be discovered.
+   * @returns Team summaries whose participant metadata contains the user.
+   */
+  listParticipatingIn(currentUser: UserReference): Promise<readonly HostedTeamSummary[]>;
   /**
    * @param team - The initial team state.
    * @param fileName - The validated Fluid file name.
@@ -290,6 +347,19 @@ export class TeamRepository {
   public async listHostedTeams(currentUser: UserReference): Promise<readonly HostedTeamSummary[]> {
     this.requireStorage();
     return this.store.listHostedBy(currentUser);
+  }
+
+  /**
+   * Lists teams whose configured participant metadata contains the current user.
+   *
+   * @param currentUser - Current delegated user with a site-scoped SharePoint ID.
+   * @returns Matching lightweight team summaries.
+   */
+  public async listParticipatingTeams(
+    currentUser: UserReference
+  ): Promise<readonly HostedTeamSummary[]> {
+    this.requireStorage();
+    return this.store.listParticipatingIn(currentUser);
   }
 
   /** @returns All team summaries the delegated user can access through SharePoint. */

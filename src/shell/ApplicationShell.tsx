@@ -201,6 +201,8 @@ function ShellView(
       return (
         <VotingPage
           service={props.teamManagement.votingService}
+          serviceScope={props.serviceScope}
+          webAbsoluteUrl={props.currentUser.imageUrl?.split('/_layouts/')[0]}
           teamId={props.route.teamId}
           sessionId={props.route.sessionId}
           onOpenSession={(teamId, sessionId) =>
@@ -249,6 +251,8 @@ function ShellView(
       return (
         <VotingPage
           service={props.teamManagement.votingService}
+          serviceScope={props.serviceScope}
+          webAbsoluteUrl={props.currentUser.imageUrl?.split('/_layouts/')[0]}
           onOpenSession={(teamId, sessionId) =>
             props.onNavigate({ view: 'Voting', teamId, sessionId, focusedVoting: true })
           }

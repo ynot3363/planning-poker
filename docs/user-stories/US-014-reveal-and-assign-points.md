@@ -7,7 +7,7 @@ agreed estimate so the story receives a transparent, deliberate point value.
 
 ## Description
 
-Reveal a Voting round automatically when every joined eligible participant has
+Reveal a Voting round automatically when every connected eligible participant has
 voted or manually when a host selects Reveal Results. Revealing freezes voting
 and displays a summary breakdown. Named mode may associate each joined person
 with their revealed vote; Anonymous mode displays only aggregate value counts
@@ -18,7 +18,7 @@ having the application calculate a final estimate automatically.
 
 Provide typed commands/selectors for:
 
-- `canAutoReveal(round, joinedParticipants)`;
+- `canAutoReveal(round, connectedParticipants)`;
 - host `revealResults(roundId)`;
 - idempotent automatic reveal after the final required vote;
 - named and anonymous post-reveal result projections;
@@ -28,8 +28,10 @@ Provide typed commands/selectors for:
 
 ## Acceptance Criteria
 
-- Automatic reveal requires at least one joined eligible participant and one
-  valid current-round vote from every joined participant.
+- Automatic reveal requires at least one connected eligible participant and one
+  valid current-round vote from every connected participant. Disconnected Named
+  participants remain visible but do not block reveal; disconnected Anonymous
+  participants are removed by US-011 Presence handling.
 - The final required vote reveals exactly once under concurrent clients.
 - A host may choose Reveal Results before all participants vote; the reveal
   records voted and missing counts and is synchronized for all clients.

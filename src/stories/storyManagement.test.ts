@@ -80,6 +80,9 @@ function createHarness(document: PlanningPokerDocumentRoot = fixtureDocument): {
     updateSessions: jest.fn(),
     prepareVotingSession: jest.fn((session) => session.id),
     joinVotingSession: jest.fn(() => undefined),
+    selectVotingStory: jest.fn(() => 'invalid-session'),
+    castVotingVote: jest.fn(() => 'invalid-session'),
+    updateVotingTimer: jest.fn(() => 'invalid-session'),
     setVotingParticipantConnection: jest.fn(),
     waitForSaved: jest.fn(async () => undefined),
     subscribe: (listener) => {
@@ -97,6 +100,7 @@ function createHarness(document: PlanningPokerDocumentRoot = fixtureDocument): {
   const store: ITeamDocumentStore = {
     list: jest.fn(async () => [summary]),
     listHostedBy: jest.fn(async () => [summary]),
+    listParticipatingIn: jest.fn(async () => []),
     create: jest.fn(async () => handle),
     load: jest.fn(async () => handle),
     rename: jest.fn(async () => undefined),

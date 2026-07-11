@@ -12,7 +12,11 @@ import type {
   TeamDocumentHandle
 } from '../repository/teamRepository';
 import type { IParticipantSessionStorage } from './sessionManagement';
-import { createSessionShareUrl, VotingSessionService } from './sessionManagement';
+import {
+  createSessionShareUrl,
+  selectEligibleVotingStories,
+  VotingSessionService
+} from './sessionManagement';
 
 const storage: IPlanningPokerStorageConfiguration = {
   libraryTitle: 'PlanningPokerAppData',
@@ -129,6 +133,138 @@ function createHarness(
       listeners.forEach((listener) => listener());
       return selected;
     }),
+    selectVotingStory: jest.fn(
+      (sessionId, storyId, roundId, currentUser, replaceActive, timestamp) => {
+        const session = document.sessions.find((candidate) => candidate.id === sessionId);
+        const story = document.stories.find((candidate) => candidate.id === storyId);
+        if (session === undefined || session.status !== 'Active') return 'invalid-session';
+        if (!document.team.hosts.some((host) => host.objectId === currentUser.objectId)) {
+          return 'host-required';
+        }
+        if (story === undefined || story.status !== 'Ready') return 'invalid-story';
+        const active = session.rounds.find((round) => round.id === session.activeRoundId);
+        if (active !== undefined && !replaceActive) return 'active-round';
+        if (active !== undefined && active.votes.length > 0) return 'round-has-votes';
+        const duration = session.settings.timerEnabled
+          ? (session.settings.timerDurationSeconds ?? 0)
+          : 0;
+        const rounds = [
+          ...session.rounds.map((round) =>
+            round.id === active?.id ? { ...round, status: 'Cancelled' as const } : round
+          ),
+          {
+            id: roundId,
+            storyId,
+            storySnapshot: {
+              storyId,
+              title: story.title,
+              description: story.description,
+              ...(story.link === undefined ? {} : { link: story.link })
+            },
+            status: 'Voting' as const,
+            votes: [],
+            timer: {
+              configuredDurationSeconds: duration,
+              status: 'Ready' as const,
+              remainingSeconds: duration
+            }
+          }
+        ];
+        document = {
+          ...document,
+          sessions: document.sessions.map((candidate) =>
+            candidate.id === sessionId
+              ? { ...candidate, rounds, activeRoundId: roundId, updatedAt: timestamp }
+              : candidate
+          ),
+          updatedAt: timestamp
+        };
+        listeners.forEach((listener) => listener());
+        return 'selected';
+      }
+    ),
+    castVotingVote: jest.fn((sessionId, roundId, vote) => {
+      const session = document.sessions.find((candidate) => candidate.id === sessionId);
+      if (session === undefined || session.status !== 'Active') return 'invalid-session';
+      if (!session.participants.some((participant) => participant.id === vote.participantId)) {
+        return 'participant-required';
+      }
+      const round = session.rounds.find((candidate) => candidate.id === roundId);
+      if (round === undefined || session.activeRoundId !== roundId || round.status !== 'Voting') {
+        return 'invalid-round';
+      }
+      if (session.settings.scaleValues.indexOf(vote.value) < 0) return 'invalid-vote';
+      const votes = round.votes.some((candidate) => candidate.participantId === vote.participantId)
+        ? round.votes.map((candidate) =>
+            candidate.participantId === vote.participantId ? vote : candidate
+          )
+        : [...round.votes, vote];
+      document = {
+        ...document,
+        sessions: document.sessions.map((candidate) =>
+          candidate.id === sessionId
+            ? {
+                ...candidate,
+                rounds: candidate.rounds.map((item) =>
+                  item.id === roundId ? { ...item, votes } : item
+                ),
+                updatedAt: vote.castAt
+              }
+            : candidate
+        ),
+        updatedAt: vote.castAt
+      };
+      listeners.forEach((listener) => listener());
+      return 'cast';
+    }),
+    updateVotingTimer: jest.fn((sessionId, roundId, command, currentUser, timestamp) => {
+      const session = document.sessions.find((candidate) => candidate.id === sessionId);
+      if (session === undefined || session.status !== 'Active') return 'invalid-session';
+      if (!document.team.hosts.some((host) => host.objectId === currentUser.objectId)) {
+        return 'host-required';
+      }
+      if (!session.settings.timerEnabled) return 'timer-disabled';
+      const round = session.rounds.find(
+        (candidate) => candidate.id === roundId && candidate.id === session.activeRoundId
+      );
+      if (round === undefined) return 'invalid-round';
+      const timer =
+        command === 'reset'
+          ? {
+              configuredDurationSeconds: round.timer.configuredDurationSeconds,
+              status: 'Ready' as const,
+              remainingSeconds: round.timer.configuredDurationSeconds,
+              resetAt: timestamp
+            }
+          : command === 'stop'
+            ? {
+                configuredDurationSeconds: round.timer.configuredDurationSeconds,
+                status: 'Stopped' as const,
+                remainingSeconds: round.timer.remainingSeconds,
+                stoppedAt: timestamp
+              }
+            : {
+                configuredDurationSeconds: round.timer.configuredDurationSeconds,
+                status: 'Running' as const,
+                remainingSeconds: round.timer.remainingSeconds,
+                startedAt: timestamp
+              };
+      document = {
+        ...document,
+        sessions: document.sessions.map((candidate) =>
+          candidate.id === sessionId
+            ? {
+                ...candidate,
+                rounds: candidate.rounds.map((item) =>
+                  item.id === roundId ? { ...item, timer } : item
+                )
+              }
+            : candidate
+        )
+      };
+      listeners.forEach((listener) => listener());
+      return 'updated';
+    }),
     setVotingParticipantConnection: jest.fn((sessionId, participantId, connection, timestamp) => {
       document = {
         ...document,
@@ -156,6 +292,7 @@ function createHarness(
   const store: ITeamDocumentStore = {
     list: jest.fn(async () => [summary]),
     listHostedBy: jest.fn(async () => [summary]),
+    listParticipatingIn: jest.fn(async () => []),
     create: jest.fn(async () => handle),
     load: jest.fn(async () => handle),
     rename: jest.fn(async () => undefined),
@@ -339,6 +476,253 @@ describe('VotingSessionService', () => {
     expect(participant.getSession().status).toBe('Active');
     expect(changed).toHaveBeenCalled();
     unsubscribe();
+  });
+
+  it('lists hosted teams plus open configured-participant sessions without duplicates', async () => {
+    const harness = createHarness();
+    const participantTeam: HostedTeamSummary = {
+      teamId: 'participant-team',
+      driveItemId: 'participant-drive',
+      title: 'Participant Team',
+      isActive: true,
+      activeSessionId: 'participant-session'
+    };
+    (harness.store.listParticipatingIn as jest.Mock).mockResolvedValue([
+      participantTeam,
+      { ...summary, activeSessionId: 'host-session' }
+    ]);
+
+    await expect(harness.service.listVotingTeams()).resolves.toEqual([
+      expect.objectContaining({ teamId: summary.teamId, relationship: 'Host' }),
+      expect.objectContaining({ teamId: participantTeam.teamId, relationship: 'Participant' })
+    ]);
+  });
+
+  it('marks a departing named client disconnected without removing its roster entry', async () => {
+    const harness = createHarness();
+    const prepared = await harness.service.prepareSession(summary);
+    const participant = await harness.service.joinSession(summary.teamId, prepared.getSession().id);
+
+    harness.service.markDisconnected(participant);
+
+    expect(participant.getSession().participants).toEqual([
+      expect.objectContaining({
+        id: participant.participantId,
+        presence: expect.objectContaining({ connection: 'Disconnected' })
+      })
+    ]);
+  });
+
+  it('selects a Ready story, snapshots it, and upserts one vote per participant', async () => {
+    const story = {
+      id: 'story-ready',
+      teamId: fixtureDocument.team.id,
+      title: 'Synchronize estimates',
+      description: 'Vote together.',
+      link: '/sites/team/Lists/Backlog/1',
+      status: 'Ready' as const,
+      estimateHistory: [],
+      createdAt: fixtureDocument.createdAt,
+      createdBy: fixtureUser,
+      updatedAt: fixtureDocument.updatedAt,
+      updatedBy: fixtureUser
+    };
+    let nextId = 0;
+    const harness = createHarness(
+      { ...fixtureDocument, stories: [story] },
+      fixtureUser,
+      undefined,
+      () => `generated-${(nextId += 1)}`
+    );
+    const prepared = await harness.service.prepareSession(summary);
+    const joined = await harness.service.joinSession(summary.teamId, prepared.getSession().id);
+    await harness.service.startVoting(joined);
+
+    await harness.service.selectStory(joined, story.id);
+    const round = joined.getSession().rounds[0];
+    const metadataUpdatesBeforeVotes = (harness.store.updateMetadata as jest.Mock).mock.calls
+      .length;
+    expect(round).toMatchObject({
+      storyId: story.id,
+      storySnapshot: { title: story.title, link: story.link },
+      status: 'Voting',
+      votes: []
+    });
+
+    await harness.service.castVote(joined, round.id, '3');
+    await harness.service.castVote(joined, round.id, '5');
+
+    expect(joined.getSession().rounds[0].votes).toEqual([
+      expect.objectContaining({ participantId: joined.participantId, value: '5' })
+    ]);
+    expect(harness.store.updateMetadata).toHaveBeenCalledTimes(metadataUpdatesBeforeVotes);
+  });
+
+  it('runs synchronized host timer commands for the active round', async () => {
+    const story = {
+      id: 'timed-story',
+      title: 'Timed story',
+      description: '',
+      status: 'Ready' as const,
+      estimateHistory: [],
+      createdAt: fixtureDocument.createdAt,
+      createdBy: fixtureUser,
+      updatedAt: fixtureDocument.updatedAt,
+      updatedBy: fixtureUser
+    };
+    let nextId = 0;
+    const harness = createHarness(
+      { ...fixtureDocument, stories: [story] },
+      fixtureUser,
+      undefined,
+      () => `timer-${(nextId += 1)}`
+    );
+    const prepared = await harness.service.prepareSession(summary);
+    const host = await harness.service.joinSession(summary.teamId, prepared.getSession().id);
+    await harness.service.startVoting(host);
+    await harness.service.selectStory(host, story.id);
+    const roundId = host.getSession().activeRoundId as string;
+
+    await harness.service.startTimer(host, roundId);
+    expect(host.getSession().rounds[0].timer.status).toBe('Running');
+    await harness.service.stopTimer(host, roundId);
+    expect(host.getSession().rounds[0].timer.status).toBe('Stopped');
+    await harness.service.resetTimer(host, roundId);
+    expect(host.getSession().rounds[0].timer).toMatchObject({
+      status: 'Ready',
+      remainingSeconds: 300
+    });
+  });
+
+  it('rejects invalid scale values, stale rounds, and replacement after any vote', async () => {
+    const story = {
+      id: 'story-ready',
+      teamId: fixtureDocument.team.id,
+      title: 'First story',
+      description: '',
+      status: 'Ready' as const,
+      estimateHistory: [],
+      createdAt: fixtureDocument.createdAt,
+      createdBy: fixtureUser,
+      updatedAt: fixtureDocument.updatedAt,
+      updatedBy: fixtureUser
+    };
+    let nextId = 0;
+    const harness = createHarness(
+      { ...fixtureDocument, stories: [story, { ...story, id: 'story-second', title: 'Second' }] },
+      fixtureUser,
+      undefined,
+      () => `generated-${(nextId += 1)}`
+    );
+    const prepared = await harness.service.prepareSession(summary);
+    const joined = await harness.service.joinSession(summary.teamId, prepared.getSession().id);
+    await harness.service.startVoting(joined);
+    await harness.service.selectStory(joined, story.id);
+    const roundId = joined.getSession().activeRoundId as string;
+
+    await expect(harness.service.castVote(joined, roundId, '100')).rejects.toMatchObject({
+      code: 'invalid-vote'
+    });
+    await expect(harness.service.castVote(joined, 'stale-round', '3')).rejects.toMatchObject({
+      code: 'invalid-round'
+    });
+    await harness.service.castVote(joined, roundId, '3');
+    await expect(harness.service.replaceStory(joined, 'story-second')).rejects.toMatchObject({
+      code: 'round-has-votes'
+    });
+  });
+
+  it('keeps concurrent votes from two synchronized participant contexts', async () => {
+    const story = {
+      id: 'story-ready',
+      title: 'Concurrent voting',
+      description: '',
+      status: 'Ready' as const,
+      estimateHistory: [],
+      createdAt: fixtureDocument.createdAt,
+      createdBy: fixtureUser,
+      updatedAt: fixtureDocument.updatedAt,
+      updatedBy: fixtureUser
+    };
+    let hostId = 0;
+    const harness = createHarness(
+      { ...fixtureDocument, stories: [story] },
+      fixtureUser,
+      undefined,
+      () => `host-${(hostId += 1)}`
+    );
+    const guestService = new VotingSessionService(
+      new TeamRepository(storage, harness.store),
+      { objectId: 'guest-user', displayName: 'Guest', loginName: 'guest@example.com' },
+      () => 'guest-participant',
+      () => '2026-07-11T12:31:00.000Z'
+    );
+    const prepared = await harness.service.prepareSession(summary);
+    const host = await harness.service.joinSession(summary.teamId, prepared.getSession().id);
+    const guest = await guestService.joinSession(summary.teamId, prepared.getSession().id);
+    await harness.service.startVoting(host);
+    await harness.service.selectStory(host, story.id);
+    const roundId = host.getSession().activeRoundId as string;
+
+    await Promise.all([
+      harness.service.castVote(host, roundId, '3'),
+      guestService.castVote(guest, roundId, '5')
+    ]);
+
+    expect(host.getSession().rounds[0].votes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ participantId: host.participantId, value: '3' }),
+        expect.objectContaining({ participantId: guest.participantId, value: '5' })
+      ])
+    );
+  });
+
+  it('filters voting eligibility by lifecycle and finalized session history', () => {
+    const ready = {
+      id: 'ready',
+      teamId: fixtureDocument.team.id,
+      title: 'Ready',
+      description: '',
+      status: 'Ready' as const,
+      estimateHistory: [],
+      createdAt: fixtureDocument.createdAt,
+      createdBy: fixtureUser,
+      updatedAt: fixtureDocument.updatedAt,
+      updatedBy: fixtureUser
+    };
+    const finalizedRound = {
+      id: 'round-final',
+      storyId: 'finalized',
+      storySnapshot: { storyId: 'finalized', title: 'Done', description: '' },
+      status: 'Finalized' as const,
+      votes: [],
+      timer: { configuredDurationSeconds: 0, status: 'Ready' as const, remainingSeconds: 0 }
+    };
+    const activeSession = {
+      id: 'session-active',
+      teamId: fixtureDocument.team.id,
+      status: 'Active' as const,
+      settings: fixtureDocument.team.settings,
+      participants: [],
+      rounds: [finalizedRound],
+      finalizedRoundIds: [finalizedRound.id],
+      createdAt: fixtureDocument.createdAt,
+      updatedAt: fixtureDocument.updatedAt
+    };
+    const document = {
+      ...fixtureDocument,
+      stories: [
+        ready,
+        { ...ready, id: 'finalized' },
+        { ...ready, id: 'pointed', status: 'Pointed' as const },
+        { ...ready, id: 'archived', status: 'Archived' as const }
+      ],
+      sessions: [activeSession]
+    };
+
+    expect(selectEligibleVotingStories(document, activeSession).map((story) => story.id)).toEqual([
+      'ready'
+    ]);
   });
 
   it('rejects Lobby preparation when authoritative team state is inactive', async () => {

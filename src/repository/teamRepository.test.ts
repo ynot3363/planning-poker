@@ -48,6 +48,9 @@ function createHandle(document: PlanningPokerDocumentRoot = fixtureDocument): Te
       return session.id;
     }),
     joinVotingSession: jest.fn(() => undefined),
+    selectVotingStory: jest.fn(() => 'invalid-session'),
+    castVotingVote: jest.fn(() => 'invalid-session'),
+    updateVotingTimer: jest.fn(() => 'invalid-session'),
     setVotingParticipantConnection: jest.fn(),
     waitForSaved: jest.fn(async () => undefined),
     subscribe: jest.fn(() => jest.fn()),
@@ -59,6 +62,7 @@ function createStore(handle: TeamDocumentHandle = createHandle()): ITeamDocument
   return {
     list: jest.fn(async () => []),
     listHostedBy: jest.fn(async () => []),
+    listParticipatingIn: jest.fn(async () => []),
     create: jest.fn(async () => handle),
     load: jest.fn(async () => handle),
     rename: jest.fn(async () => undefined),
@@ -98,6 +102,15 @@ describe('TeamRepository', () => {
     await repository.listHostedTeams(fixtureUser);
 
     expect(store.listHostedBy).toHaveBeenCalledWith(fixtureUser);
+  });
+
+  it('delegates configured-participant discovery with the current user', async () => {
+    const store = createStore();
+    const repository = new TeamRepository(storage, store);
+
+    await repository.listParticipatingTeams(fixtureUser);
+
+    expect(store.listParticipatingIn).toHaveBeenCalledWith(fixtureUser);
   });
 
   it('projects the complete SharePoint discovery contract from Fluid state', () => {

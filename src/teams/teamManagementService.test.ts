@@ -43,6 +43,9 @@ function createHandle(): TeamDocumentHandle {
       return session.id;
     },
     joinVotingSession: () => undefined,
+    selectVotingStory: () => 'invalid-session',
+    castVotingVote: () => 'invalid-session',
+    updateVotingTimer: () => 'invalid-session',
     setVotingParticipantConnection: jest.fn(),
     waitForSaved: async () => undefined,
     subscribe: () => jest.fn(),
@@ -56,6 +59,7 @@ function createService(handle: TeamDocumentHandle = createHandle()): {
 } {
   const store: ITeamDocumentStore = {
     list: jest.fn(async () => []),
+    listParticipatingIn: jest.fn(async () => []),
     listHostedBy: jest.fn(async () => [
       {
         teamId: fixtureDocument.team.id,
