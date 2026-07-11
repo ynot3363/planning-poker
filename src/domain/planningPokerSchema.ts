@@ -37,7 +37,10 @@ export const TeamSchema = factory.object('PlanningPokerTeam', {
   hosts: factory.array(UserReferenceSchema),
   configuredMembers: factory.array(UserReferenceSchema),
   settings: TeamSettingsSchema,
-  audit: AuditFieldsSchema
+  createdAt: factory.string,
+  createdBy: UserReferenceSchema,
+  updatedAt: factory.string,
+  updatedBy: UserReferenceSchema
 });
 
 /** SharedTree schema for one finalized estimate history entry. */
@@ -58,7 +61,10 @@ export const StorySchema = factory.object('PointingStory', {
   status: factory.string,
   currentEstimate: factory.optional(factory.string),
   estimateHistory: factory.array(EstimateHistoryEntrySchema),
-  audit: AuditFieldsSchema
+  createdAt: factory.string,
+  createdBy: UserReferenceSchema,
+  updatedAt: factory.string,
+  updatedBy: UserReferenceSchema
 });
 
 /** SharedTree schema for participant presence. */
@@ -137,7 +143,10 @@ export const SessionSchema: TreeNodeSchema = factory.object('VotingSession', {
   finalizedRoundIds: stringList,
   endedAt: factory.optional(factory.string),
   endedBy: factory.optional(UserReferenceSchema),
-  audit: AuditFieldsSchema
+  createdAt: factory.string,
+  createdBy: UserReferenceSchema,
+  updatedAt: factory.string,
+  updatedBy: UserReferenceSchema
 });
 
 /** Root SharedTree schema stored in each Planning Poker Fluid container. */

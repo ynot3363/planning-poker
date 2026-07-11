@@ -7,6 +7,12 @@
     "includeClientSideAssets": true,
     "skipFeatureDeployment": true,
     "isDomainIsolated": false,
+    "webApiPermissionRequests": [
+      {
+        "resource": "Microsoft Graph",
+        "scope": "Files.ReadWrite"
+      }
+    ],
     "developer": {
       "name": "Anthony Poulin",
       "websiteUrl": "https://www.anthonyepoulin.com",

@@ -26,13 +26,14 @@ Provide typed form and mutation contracts for:
 - multiple optional configured members;
 - `isActive`;
 - scale kind and ordered values;
-- timer enabled and duration in seconds;
+- timer enabled and duration in whole minutes;
 - named or anonymous voting mode;
 - create, update, cancel, and validation results.
 
 Custom scale values are trimmed, case-insensitively unique, ordered non-empty
 labels. Require at least two and allow at most twenty values. Timer duration is
-required only when enabled and supports 1 through 3,600 whole seconds.
+required only when enabled and supports 1 through 60 whole minutes. The form
+converts minutes to the US-001 persisted seconds contract.
 
 ## Acceptance Criteria
 

@@ -75,3 +75,5 @@ Provide typed commands and selectors for:
 - Inject a clock into pure timer selectors and commands.
 - Use one local interval per mounted timer view and always clean it up.
 - Do not persist formatted time strings.
+- Consume the persisted seconds produced by US-005's whole-minute team input;
+  voting timer state and countdown selectors remain second-based.

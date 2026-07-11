@@ -12,6 +12,9 @@ import { ApplicationShell } from '../../../shell/ApplicationShell';
 import type { IPlanningPokerCurrentUser } from '../../../shell/ApplicationShell';
 import { readPlanningPokerRoute, writePlanningPokerRoute } from '../../../shell/planningPokerRoute';
 import type { IPlanningPokerRoute } from '../../../shell/planningPokerRoute';
+import type { UserReference } from '../../../domain/planningPokerDomain';
+import type { ITeamManagementService } from '../../../teams/teamManagementService';
+import type { IPlanningPokerPeopleService } from '../../../teams/sharePointPeopleService';
 import styles from './PlanningPoker.module.scss';
 import { PlanningPokerThemeProvider } from './PlanningPokerTheme';
 
@@ -64,6 +67,14 @@ export interface IPlanningPokerProps {
   readonly currentUser: IPlanningPokerCurrentUser;
   /** SPFx service scope required by Microsoft 365 host components. */
   readonly serviceScope: ServiceScope;
+  /** Authenticated team-administration dependencies initialized by the web part. */
+  readonly teamManagement?: {
+    readonly currentUser: UserReference;
+    readonly service: ITeamManagementService;
+    readonly peopleService: IPlanningPokerPeopleService;
+  };
+  /** Safe team-service initialization failure for the Teams destination. */
+  readonly teamManagementError?: string;
   /** Optional route adapter used by tests or specialized Microsoft 365 hosts. */
   readonly routeAdapter?: IPlanningPokerRouteAdapter;
 }
@@ -105,6 +116,8 @@ function ConfiguredPlanningPoker(props: IPlanningPokerProps): React.ReactElement
       configurationStatus="configured"
       currentUser={props.currentUser}
       serviceScope={props.serviceScope}
+      teamManagement={props.teamManagement}
+      teamManagementError={props.teamManagementError}
       onNavigate={handleNavigate}
       onToggleNavigation={() => setIsNavigationCollapsed((current) => !current)}
     />

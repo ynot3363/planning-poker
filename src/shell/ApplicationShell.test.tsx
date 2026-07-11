@@ -67,6 +67,7 @@ describe('ApplicationShell', () => {
     expect(navigation?.querySelector('[data-icon-name="TeamsLogo"]')).toBeNull();
     expect(container.textContent).toContain('Ada Lovelace');
     expect(container.querySelector('[aria-label="Signed in as Ada Lovelace"]')).not.toBeNull();
+    expect(container.querySelector('[id^="planning-poker-panel-layer-"]')).not.toBeNull();
   });
 
   it('renders icon-only labeled navigation and forwards destination selection', () => {

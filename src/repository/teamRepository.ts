@@ -14,8 +14,11 @@ export type TeamRepositoryErrorCode =
   | 'corrupt-document'
   | 'duplicate-title'
   | 'invalid-title'
+  | 'invalid-team'
+  | 'host-mismatch'
   | 'disconnected'
-  | 'save-timeout';
+  | 'save-timeout'
+  | 'metadata-sync';
 
 /** Represents an expected repository failure without exposing transport details. */
 export class TeamRepositoryError extends Error {
@@ -31,6 +34,7 @@ export class TeamRepositoryError extends Error {
   ) {
     super(message);
     this.name = 'TeamRepositoryError';
+    Object.setPrototypeOf(this, TeamRepositoryError.prototype);
   }
 }
 
@@ -54,6 +58,15 @@ export interface TeamDocumentHandle {
   readonly driveItemId: string;
   /** @returns A plain serializable snapshot of the current shared state. */
   getSnapshot(): PlanningPokerDocumentRoot;
+  /**
+   * Applies one team mutation through the store's Fluid transaction boundary.
+   *
+   * @param team - The complete next team state with stable identity and audit fields.
+   * @returns `void` after the local transaction is applied.
+   */
+  updateTeam(team: PlanningPokerTeam): void;
+  /** @returns A promise that resolves only after Fluid acknowledges the pending mutation. */
+  waitForSaved(): Promise<void>;
   /**
    * @param listener - The callback invoked after shared state changes.
    * @returns An idempotent unsubscribe function.
@@ -88,6 +101,33 @@ export interface ITeamDocumentStore {
    * @returns A promise that resolves when the rename is acknowledged.
    */
   rename(teamId: string, title: string): Promise<void>;
+  /**
+   * Refreshes the SharePoint discovery index from an authoritative Fluid snapshot.
+   *
+   * @param document - The validated plain document snapshot.
+   * @returns A promise that resolves when SharePoint acknowledges the metadata update.
+   */
+  updateMetadata(document: PlanningPokerDocumentRoot): Promise<void>;
+}
+
+/** Represents the SharePoint discovery values projected from one Fluid document. */
+export interface TeamMetadataProjection {
+  /** Built-in SharePoint title. */
+  readonly title: string;
+  /** Stable team identifier. */
+  readonly teamId: string;
+  /** Application hosts projected to the multi-person field. */
+  readonly hosts: readonly UserReference[];
+  /** Configured members projected to the participants field. */
+  readonly participants: readonly UserReference[];
+  /** Whether the team can begin new work. */
+  readonly isActive: boolean;
+  /** Persisted document schema version. */
+  readonly schemaVersion: string;
+  /** Current lobby or active session identifier. */
+  readonly activeSessionId?: string;
+  /** ISO timestamp of the latest meaningful Fluid activity. */
+  readonly lastActivity: string;
 }
 
 const INVALID_FILE_NAME = /["*:<>?\\/|]/;
@@ -125,6 +165,25 @@ export function isHostedBy(team: PlanningPokerTeam, currentUser: UserReference):
   return team.hosts.some((host) => host.objectId === currentUser.objectId);
 }
 
+/**
+ * Projects the authoritative Fluid document into lightweight SharePoint discovery metadata.
+ *
+ * @param document - The validated plain document snapshot.
+ * @returns The complete team metadata projection.
+ */
+export function projectTeamMetadata(document: PlanningPokerDocumentRoot): TeamMetadataProjection {
+  return {
+    title: document.team.title,
+    teamId: document.team.id,
+    hosts: document.team.hosts,
+    participants: document.team.configuredMembers,
+    isActive: document.team.isActive,
+    schemaVersion: document.schemaVersion,
+    activeSessionId: document.openSessionId,
+    lastActivity: document.updatedAt
+  };
+}
+
 /** Coordinates domain validation with a SharePoint- and Fluid-backed document store. */
 export class TeamRepository {
   /**
@@ -158,19 +217,12 @@ export class TeamRepository {
    */
   public async createTeamDocument(team: PlanningPokerTeam): Promise<TeamDocumentHandle> {
     this.requireStorage();
-    const titleError = validateTeamTitle(team.title);
-    if (titleError !== undefined) {
-      throw new TeamRepositoryError('invalid-title', titleError);
-    }
-    const existing = await this.store.list();
-    if (
-      existing.some(
-        (candidate) => candidate.title.toLocaleLowerCase() === team.title.toLocaleLowerCase()
-      )
-    ) {
-      throw new TeamRepositoryError('duplicate-title', 'A team already uses that title.');
-    }
-    return this.store.create(team, `${team.title}.fluid`);
+    await this.validateAvailableTitle(team.title);
+    this.validateTeam(team);
+    const handle = await this.store.create(team, `${team.title.trim()}.fluid`);
+    await handle.waitForSaved();
+    await this.updateTeamMetadata(handle);
+    return handle;
   }
 
   /**
@@ -194,11 +246,102 @@ export class TeamRepository {
    */
   public async renameTeamDocument(teamId: string, title: string): Promise<void> {
     this.requireStorage();
-    const titleError = validateTeamTitle(title);
+    await this.validateAvailableTitle(title, teamId);
+    await this.store.rename(teamId, title.trim());
+  }
+
+  /**
+   * Applies an authorized team edit, waits for durable Fluid save, and refreshes discovery metadata.
+   *
+   * @param handle - The loaded document handle that owns the Fluid transaction boundary.
+   * @param currentUser - The delegated user requesting the mutation.
+   * @param team - The complete next team state.
+   * @returns A promise that resolves after Fluid, rename, and metadata operations are acknowledged.
+   * @throws Throws `TeamRepositoryError` when Fluid host state rejects the mutation or data is invalid.
+   */
+  public async updateTeamDocument(
+    handle: TeamDocumentHandle,
+    currentUser: UserReference,
+    team: PlanningPokerTeam
+  ): Promise<void> {
+    this.requireStorage();
+    const current = handle.getSnapshot();
+    if (current.team.id !== team.id || handle.teamId !== team.id) {
+      throw new TeamRepositoryError('invalid-team', 'The loaded team identity does not match.');
+    }
+    if (!isHostedBy(current.team, currentUser)) {
+      throw new TeamRepositoryError(
+        'host-mismatch',
+        'Team host details changed. Reload the team or ask another host to repair access.'
+      );
+    }
+    await this.validateAvailableTitle(team.title, team.id);
+    this.validateTeam(team);
+    const isRenamed = current.team.title !== team.title.trim();
+    handle.updateTeam(team);
+    await handle.waitForSaved();
+    if (isRenamed) {
+      await this.store.rename(team.id, team.title.trim());
+    }
+    await this.updateTeamMetadata(handle);
+  }
+
+  /**
+   * Refreshes SharePoint discovery metadata after a durable Fluid mutation.
+   *
+   * @param handle - The document handle containing the authoritative snapshot.
+   * @returns A promise that resolves after SharePoint acknowledges the update.
+   * @throws Throws `TeamRepositoryError` when metadata cannot be synchronized.
+   */
+  public async updateTeamMetadata(handle: TeamDocumentHandle): Promise<void> {
+    this.requireStorage();
+    try {
+      await this.store.updateMetadata(handle.getSnapshot());
+    } catch {
+      throw new TeamRepositoryError(
+        'metadata-sync',
+        'The team was saved, but its SharePoint discovery details could not be refreshed.'
+      );
+    }
+  }
+
+  /**
+   * Validates title syntax and case-insensitive uniqueness.
+   *
+   * @param title - The requested team title.
+   * @param currentTeamId - The stable team identifier to exclude during a rename.
+   * @returns A promise that resolves when the title is available.
+   * @throws Throws `TeamRepositoryError` for invalid or duplicate titles.
+   */
+  private async validateAvailableTitle(title: string, currentTeamId?: string): Promise<void> {
+    const trimmedTitle = title.trim();
+    const titleError = validateTeamTitle(trimmedTitle);
     if (titleError !== undefined) {
       throw new TeamRepositoryError('invalid-title', titleError);
     }
-    await this.store.rename(teamId, title);
+    const existing = await this.store.list();
+    if (
+      existing.some(
+        (candidate) =>
+          candidate.teamId !== currentTeamId &&
+          candidate.title.trim().toLocaleLowerCase() === trimmedTitle.toLocaleLowerCase()
+      )
+    ) {
+      throw new TeamRepositoryError('duplicate-title', 'A team already uses that title.');
+    }
+  }
+
+  /**
+   * Enforces repository-level team invariants before a Fluid mutation.
+   *
+   * @param team - The requested complete team state.
+   * @returns `void` when repository invariants are satisfied.
+   * @throws Throws `TeamRepositoryError` when no application host remains.
+   */
+  private validateTeam(team: PlanningPokerTeam): void {
+    if (team.hosts.length === 0) {
+      throw new TeamRepositoryError('invalid-team', 'A team must have at least one host.');
+    }
   }
 
   /**
