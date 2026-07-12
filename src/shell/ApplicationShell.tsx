@@ -146,9 +146,10 @@ function AboutView(): React.ReactElement {
         <p>
           Results reveal automatically after every connected participant votes, or a host can reveal
           early. Reveal freezes voting and shows named choices or anonymous aggregates. A host then
-          confirms a final value from the session scale; the app never calculates the estimate
-          automatically. Story and ended-session exports contain the documented summaries;
-          session-result exports exclude participant identities and individual vote records.
+          selects a final value from the session scale; the app never calculates the estimate
+          automatically. Ending preserves read-only host history and offers an aggregate CSV when
+          finalized results exist. Session-result exports exclude participant identities and
+          individual vote records.
         </p>
       </ContentCard>
       <ContentCard label="Host and participant capabilities" tone="warning">
@@ -213,6 +214,7 @@ function ShellView(
           onOpenSession={(teamId, sessionId) =>
             props.onNavigate({ view: 'Voting', teamId, sessionId, focusedVoting: true })
           }
+          onExitFocusedVoting={() => props.onNavigate({ view: 'Voting', focusedVoting: false })}
         />
       );
     }
@@ -258,9 +260,14 @@ function ShellView(
           service={props.teamManagement.votingService}
           serviceScope={props.serviceScope}
           webAbsoluteUrl={props.currentUser.imageUrl?.split('/_layouts/')[0]}
+          teamId={props.route.teamId}
           onOpenSession={(teamId, sessionId) =>
             props.onNavigate({ view: 'Voting', teamId, sessionId, focusedVoting: true })
           }
+          onViewSessionHistory={(teamId) =>
+            props.onNavigate({ view: 'Voting', teamId, focusedVoting: false })
+          }
+          onExitSessionHistory={() => props.onNavigate({ view: 'Voting', focusedVoting: false })}
         />
       );
     }
@@ -311,6 +318,9 @@ function getViewDescription(route: IPlanningPokerRoute): string {
     return 'Prepare and organize the work your team will estimate.';
   }
   if (route.view === 'Voting') {
+    if (route.teamId !== undefined) {
+      return 'Review and reopen completed voting sessions for this team.';
+    }
     return 'Join a synchronized estimation session from a host-provided link.';
   }
   return 'Create and manage the teams that estimate work together.';

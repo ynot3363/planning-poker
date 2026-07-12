@@ -4,7 +4,7 @@ import { DefaultButton, PrimaryButton } from '@fluentui/react/lib/Button';
 import { MessageBar, MessageBarType } from '@fluentui/react/lib/MessageBar';
 import { Dialog, DialogFooter, DialogType } from '@fluentui/react/lib/Dialog';
 import { TooltipHost } from '@fluentui/react/lib/Tooltip';
-import type { PlanningPokerDocumentRoot } from '../domain/planningPokerDomain';
+import type { PlanningPokerDocumentRoot, VotingSession } from '../domain/planningPokerDomain';
 import type { HostedTeamSummary } from '../repository/teamRepository';
 import { ContentCard, StatusState } from '../shell/ShellPrimitives';
 import { LivePersona } from '../shell/LivePersona';
@@ -15,13 +15,19 @@ import type {
   VotingTeamSummary
 } from './sessionManagement';
 import { createSessionShareUrl } from './sessionManagement';
-import { selectEligibleVotingStories } from './sessionManagement';
+import { selectEligibleVotingStories, selectSessionStoryList } from './sessionManagement';
 import { normalizeStoryLink } from '../stories/storyManagement';
 import type { NamedParticipantRow } from './participation';
 import { selectCurrentVoteValue, selectParticipation } from './participation';
 import { VotingTimerPanel } from './VotingTimerPanel';
 import { selectVotingResults } from './results';
 import { VotingResultsPanel } from './VotingResultsPanel';
+import {
+  createSessionResultRows,
+  createSessionResultsFileName,
+  serializeSessionResults
+} from './sessionResultsExport';
+import type { SessionResultExportRow } from './sessionResultsExport';
 import styles from './VotingPage.module.scss';
 
 /** Dependencies for the normal and focused Voting destination. */
@@ -32,6 +38,9 @@ export interface IVotingPageProps {
   readonly serviceScope: ServiceScope;
   readonly webAbsoluteUrl?: string;
   readonly onOpenSession: (teamId: string, sessionId: string) => void;
+  readonly onViewSessionHistory?: (teamId: string) => void;
+  readonly onExitSessionHistory?: () => void;
+  readonly onExitFocusedVoting?: () => void;
 }
 
 type LoadingState = 'loading' | 'ready' | 'error';
@@ -45,6 +54,7 @@ type CopyState = 'idle' | 'copied' | 'failed';
  */
 export function VotingPage(props: IVotingPageProps): React.ReactElement {
   const isFocused = props.teamId !== undefined && props.sessionId !== undefined;
+  const isSessionHistory = props.teamId !== undefined && props.sessionId === undefined;
   const [loadingState, setLoadingState] = React.useState<LoadingState>('loading');
   const [teams, setTeams] = React.useState<readonly VotingTeamSummary[]>([]);
   const [context, setContext] = React.useState<VotingSessionContext>();
@@ -59,6 +69,9 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
   const [previewStoryId, setPreviewStoryId] = React.useState<string>();
   const [selectedFinalEstimate, setSelectedFinalEstimate] = React.useState<string>();
   const [isChangingFinalEstimate, setIsChangingFinalEstimate] = React.useState(false);
+  const [isEndConfirmationOpen, setIsEndConfirmationOpen] = React.useState(false);
+  const [isEnding, setIsEnding] = React.useState(false);
+  const [exportMessage, setExportMessage] = React.useState<string>();
 
   React.useEffect(() => {
     let isCurrent = true;
@@ -131,14 +144,17 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
   const synchronizedActiveStoryId = synchronizedSession?.rounds.find(
     (round) => round.id === synchronizedSession.activeRoundId
   )?.storyId;
-  const firstStoryId = document?.stories[0]?.id;
+  const firstStoryId =
+    document === undefined || synchronizedSession === undefined
+      ? undefined
+      : selectSessionStoryList(document, synchronizedSession)[0]?.id;
   React.useEffect(() => {
     if (synchronizedActiveStoryId !== undefined) {
       setPreviewStoryId(synchronizedActiveStoryId);
-    } else if (firstStoryId !== undefined) {
-      setPreviewStoryId((current) => current ?? firstStoryId);
+    } else {
+      setPreviewStoryId(firstStoryId);
     }
-  }, [firstStoryId, synchronizedActiveStoryId]);
+  }, [firstStoryId, synchronizedActiveStoryId, synchronizedSession?.id]);
 
   const prepare = async (team: HostedTeamSummary): Promise<void> => {
     setBusyTeamId(team.teamId);
@@ -152,6 +168,7 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
       setError(
         reason instanceof Error ? reason.message : 'The voting Lobby could not be prepared.'
       );
+    } finally {
       setBusyTeamId(undefined);
     }
   };
@@ -300,6 +317,40 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
     }
   };
 
+  const endSession = async (): Promise<void> => {
+    if (context === undefined) {
+      return;
+    }
+    setIsEnding(true);
+    setError(undefined);
+    try {
+      await props.service.endSession(context);
+      setDocument(context.getDocument());
+      setIsEndConfirmationOpen(false);
+    } catch (reason: unknown) {
+      setError(reason instanceof Error ? reason.message : 'The voting session could not be ended.');
+    } finally {
+      setIsEnding(false);
+    }
+  };
+
+  const exportResults = (
+    snapshot: PlanningPokerDocumentRoot,
+    endedSession: VotingSession
+  ): void => {
+    const csv = serializeSessionResults(snapshot, endedSession);
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    try {
+      const anchor = window.document.createElement('a');
+      anchor.href = url;
+      anchor.download = createSessionResultsFileName(snapshot.team.title, endedSession.id);
+      anchor.click();
+      setExportMessage('Session results exported.');
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  };
+
   if (loadingState === 'loading') {
     return (
       <StatusState
@@ -316,6 +367,55 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
         title="Voting session unavailable"
         description={error ?? 'The voting session could not be opened.'}
       />
+    );
+  }
+  if (isSessionHistory) {
+    const historyTeam = teams.find((team) => team.teamId === props.teamId);
+    if (historyTeam === undefined || historyTeam.relationship !== 'Host') {
+      return (
+        <StatusState
+          kind="error"
+          title="Session history unavailable"
+          description="This team session history is no longer available."
+        />
+      );
+    }
+    return (
+      <div className={styles.sessionHistory}>
+        <header className={styles.sessionHistoryHeader}>
+          <div>
+            <p className={styles.eyebrow}>Voting history</p>
+            <h2>{historyTeam.title} session history</h2>
+          </div>
+          <DefaultButton iconProps={{ iconName: 'Back' }} onClick={props.onExitSessionHistory}>
+            Back to Voting
+          </DefaultButton>
+        </header>
+        {historyTeam.endedSessions.length === 0 ? (
+          <StatusState
+            kind="empty"
+            title="No completed sessions"
+            description="Completed voting sessions will appear here."
+          />
+        ) : (
+          <ul
+            className={styles.endedSessionList}
+            aria-label={`${historyTeam.title} complete session history`}
+          >
+            {historyTeam.endedSessions.map((endedSession) => (
+              <li key={endedSession.sessionId}>
+                <DefaultButton
+                  onClick={() => props.onOpenSession(historyTeam.teamId, endedSession.sessionId)}
+                >
+                  {formatSessionTimestamp(endedSession.endedAt)} ·{' '}
+                  {endedSession.finalizedResultCount}{' '}
+                  {endedSession.finalizedResultCount === 1 ? 'result' : 'results'}
+                </DefaultButton>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     );
   }
   if (!isFocused) {
@@ -360,6 +460,31 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
                         </PrimaryButton>
                       )}
                     </div>
+                    {team.endedSessions.length > 0 && (
+                      <section aria-label={`${team.title} ended session history`}>
+                        <h3>Ended sessions</h3>
+                        <ul className={styles.endedSessionList}>
+                          {team.endedSessions.slice(0, 2).map((endedSession) => (
+                            <li key={endedSession.sessionId}>
+                              <DefaultButton
+                                onClick={() =>
+                                  props.onOpenSession(team.teamId, endedSession.sessionId)
+                                }
+                              >
+                                {formatSessionTimestamp(endedSession.endedAt)} ·{' '}
+                                {endedSession.finalizedResultCount}{' '}
+                                {endedSession.finalizedResultCount === 1 ? 'result' : 'results'}
+                              </DefaultButton>
+                            </li>
+                          ))}
+                        </ul>
+                        {props.onViewSessionHistory !== undefined && (
+                          <DefaultButton onClick={() => props.onViewSessionHistory?.(team.teamId)}>
+                            View session history
+                          </DefaultButton>
+                        )}
+                      </section>
+                    )}
                   </div>
                 </ContentCard>
               </li>
@@ -379,6 +504,37 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
       />
     );
   }
+  const finalizedResults = createSessionResultRows(document, session);
+  if (session.status === 'Ended') {
+    const resultCount = finalizedResults.length;
+    return (
+      <div className={styles.focusedSession}>
+        {error !== undefined && (
+          <MessageBar messageBarType={MessageBarType.error}>{error}</MessageBar>
+        )}
+        {exportMessage !== undefined && (
+          <MessageBar messageBarType={MessageBarType.success}>{exportMessage}</MessageBar>
+        )}
+        <section className={styles.completionPanel} aria-labelledby="session-ended-heading">
+          <h2 id="session-ended-heading">Voting session ended</h2>
+          <p>
+            {resultCount === 0
+              ? 'This session ended without finalized results.'
+              : `${resultCount} finalized ${resultCount === 1 ? 'result is' : 'results are'} available.`}
+          </p>
+          {resultCount > 0 && <FinalizedStoriesTable rows={finalizedResults} />}
+          <div className={styles.actions}>
+            {resultCount > 0 && (
+              <PrimaryButton onClick={() => exportResults(document, session)}>
+                Export Results CSV
+              </PrimaryButton>
+            )}
+            <DefaultButton onClick={props.onExitFocusedVoting}>Back to Voting</DefaultButton>
+          </div>
+        </section>
+      </div>
+    );
+  }
   const sessionShareUrl = createSessionShareUrl(
     window.location.href,
     context.team.teamId,
@@ -387,6 +543,7 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
   const participation = selectParticipation(session, context.participantId);
   const activeRound = session.rounds.find((round) => round.id === session.activeRoundId);
   const eligibleStories = selectEligibleVotingStories(document, session);
+  const listedStories = selectSessionStoryList(document, session);
   const currentVote = selectCurrentVoteValue(session, context.participantId);
   const canReplaceStory = activeRound?.status === 'Voting' && activeRound.votes.length === 0;
   const actionsUnavailable = isVotingActionBusy || context.getConnectionState() === 'Disconnected';
@@ -462,6 +619,15 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
               Copy Url
             </DefaultButton>
           </TooltipHost>
+          <RoleGuard allowed={context.isHost}>
+            <DefaultButton
+              className={styles.endSessionButton}
+              disabled={actionsUnavailable}
+              onClick={() => setIsEndConfirmationOpen(true)}
+            >
+              End session
+            </DefaultButton>
+          </RoleGuard>
           <span className={styles.copyStatus} role="status" aria-live="polite">
             {copyState === 'copied' ? 'URL copied' : copyState === 'failed' ? 'Copy failed' : ''}
           </span>
@@ -479,11 +645,11 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
         <div className={styles.focusedGrid}>
           <aside className={styles.storyColumn} aria-labelledby="session-stories-heading">
             <h3 id="session-stories-heading">Stories</h3>
-            {document.stories.length === 0 ? (
-              <p>No stories are available.</p>
+            {listedStories.length === 0 ? (
+              <p>No unpointed stories are available.</p>
             ) : (
               <ul className={styles.storyList}>
-                {document.stories.map((story) => {
+                {listedStories.map((story) => {
                   const isActive = story.id === activeRound?.storyId;
                   const isPreviewed = story.id === previewStoryId;
                   return (
@@ -642,6 +808,7 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
                 )}
               </section>
             )}
+            {finalizedResults.length > 0 && <FinalizedStoriesTable rows={finalizedResults} />}
             {session.status === 'Lobby' && (
               <RoleGuard allowed={context.isHost}>
                 <PrimaryButton
@@ -751,8 +918,93 @@ export function VotingPage(props: IVotingPageProps): React.ReactElement {
             </DialogFooter>
           </Dialog>
         )}
+        {isEndConfirmationOpen && (
+          <Dialog
+            hidden={false}
+            dialogContentProps={{
+              type: DialogType.normal,
+              title: 'End this voting session?',
+              closeButtonAriaLabel: 'Close end session confirmation',
+              subText:
+                activeRound?.status === 'Voting' || activeRound?.status === 'Revealed'
+                  ? 'The unfinished round will be cancelled without assigning an estimate. Finalized results will remain available for export.'
+                  : session.finalizedRoundIds.length > 0
+                    ? 'Finalized results will remain available as read-only history and can be exported.'
+                    : 'This session has no finalized results and will end without a results export.'
+            }}
+            modalProps={{ isBlocking: true }}
+            onDismiss={isEnding ? undefined : () => setIsEndConfirmationOpen(false)}
+          >
+            <DialogFooter>
+              <PrimaryButton
+                className={styles.endSessionButton}
+                disabled={isEnding}
+                onClick={() => endSession().catch(() => undefined)}
+              >
+                {isEnding ? 'Ending...' : 'End session'}
+              </PrimaryButton>
+              <DefaultButton disabled={isEnding} onClick={() => setIsEndConfirmationOpen(false)}>
+                Cancel
+              </DefaultButton>
+            </DialogFooter>
+          </Dialog>
+        )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Formats an ended-session timestamp without seconds for compact session navigation.
+ *
+ * @param value - ISO session completion timestamp.
+ * @returns A locale-aware date and time through minute precision.
+ */
+function formatSessionTimestamp(value: string): string {
+  return new Date(value).toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit'
+  });
+}
+
+interface IFinalizedStoriesTableProps {
+  readonly rows: readonly SessionResultExportRow[];
+}
+
+/**
+ * Renders privacy-safe finalized story summaries for quick session reference.
+ *
+ * @param props - Finalized session result rows to display.
+ * @returns A semantic table containing story, estimate, vote count, and finalization time.
+ */
+function FinalizedStoriesTable(props: IFinalizedStoriesTableProps): React.ReactElement {
+  return (
+    <section className={styles.votedStories} aria-label="Voted stories">
+      <table className={styles.resultsTable}>
+        <caption>Voted stories</caption>
+        <thead>
+          <tr>
+            <th scope="col">Story</th>
+            <th scope="col">Points</th>
+            <th scope="col">Votes</th>
+            <th scope="col">Finalized on</th>
+          </tr>
+        </thead>
+        <tbody>
+          {props.rows.map((row) => (
+            <tr key={`${row.sessionId}-${row.storyId}`}>
+              <td>{row.storyTitle}</td>
+              <td>{row.assignedPointValue}</td>
+              <td>{row.totalVotes}</td>
+              <td>{new Date(row.finalizedOn).toLocaleString()}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
   );
 }
 

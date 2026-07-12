@@ -124,6 +124,9 @@ export type VotingFinalizeResult =
   | 'invalid-estimate'
   | 'invalid-story';
 
+/** Expected outcomes from ending an open voting session. */
+export type VotingEndResult = 'ended' | 'already-ended' | 'invalid-session' | 'host-required';
+
 /** Owns one loaded Fluid document and its subscription lifecycle. */
 export interface TeamDocumentHandle {
   /** The stable team identifier. */
@@ -225,6 +228,12 @@ export interface TeamDocumentHandle {
     currentUser: UserReference,
     timestamp: string
   ): VotingFinalizeResult;
+  /** Ends the matching open session and cancels any unfinished active round atomically. */
+  endVotingSession(
+    sessionId: string,
+    currentUser: UserReference,
+    timestamp: string
+  ): VotingEndResult;
   /**
    * Updates technical participant presence without deleting durable roster or vote state.
    *

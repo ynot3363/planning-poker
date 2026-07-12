@@ -70,6 +70,7 @@ function createService(
     revealVotingRound: jest.fn(() => 'revealed'),
     undoVotingRoundReveal: jest.fn(() => 'reopened'),
     finalizeVotingRound: jest.fn(() => 'finalized'),
+    endVotingSession: jest.fn(() => 'ended'),
     setVotingParticipantConnection: jest.fn(),
     waitForSaved: jest.fn(async () => undefined),
     subscribe: jest.fn(() => jest.fn()),
@@ -87,7 +88,9 @@ function createService(
   };
   return {
     listHostedTeams: jest.fn(async () => [team]),
-    listVotingTeams: jest.fn(async () => [{ ...team, relationship: 'Host' as const }]),
+    listVotingTeams: jest.fn(async () => [
+      { ...team, relationship: 'Host' as const, endedSessions: [] }
+    ]),
     prepareSession: jest.fn(async (_team: HostedTeamSummary) => context),
     joinSession: jest.fn(async (_teamId: string, _sessionId: string) => context),
     startVoting: jest.fn(async (_context: VotingSessionContext) => {
@@ -291,6 +294,29 @@ function createService(
       };
       return document.sessions[0];
     }),
+    endSession: jest.fn(async (_context: VotingSessionContext) => {
+      const active = document.sessions[0];
+      document = {
+        ...document,
+        openSessionId: undefined,
+        sessions: [
+          {
+            ...active,
+            status: 'Ended',
+            activeRoundId: undefined,
+            rounds: active.rounds.map((round) =>
+              round.id === active.activeRoundId &&
+              (round.status === 'Voting' || round.status === 'Revealed')
+                ? { ...round, status: 'Cancelled' }
+                : round
+            ),
+            endedAt: '2026-07-11T12:35:00.000Z',
+            endedBy: fixtureUser
+          }
+        ]
+      };
+      return document.sessions[0];
+    }),
     subscribe: jest.fn((_context: VotingSessionContext, _listener: () => void) => jest.fn()),
     markDisconnected: jest.fn(),
     closeSession: jest.fn((_context: VotingSessionContext) => undefined)
@@ -339,12 +365,175 @@ describe('VotingPage', () => {
       expect.objectContaining({ teamId: team.teamId, relationship: 'Host' })
     );
     expect(onOpenSession).toHaveBeenCalledWith(team.teamId, session.id);
+    expect(prepare?.textContent).toContain('Prepare voting');
+    expect(prepare?.disabled).toBe(false);
+  });
+
+  it('excludes previously pointed stories from a new session story list', async () => {
+    const readyStory: PointingStory = {
+      id: 'ready-story',
+      title: 'Ready for this session',
+      description: 'Ready description',
+      status: 'Ready',
+      estimateHistory: [],
+      createdAt: fixtureDocument.createdAt,
+      createdBy: fixtureUser,
+      updatedAt: fixtureDocument.updatedAt,
+      updatedBy: fixtureUser
+    };
+    const pointedStory: PointingStory = {
+      ...readyStory,
+      id: 'pointed-story',
+      title: 'Already pointed story',
+      status: 'Pointed',
+      currentEstimate: '5'
+    };
+    const service = createService(true, session, 'participant-current', [pointedStory, readyStory]);
+
+    await act(async () => {
+      renderVoting(
+        <VotingPage
+          service={service}
+          serviceScope={serviceScope}
+          teamId={team.teamId}
+          sessionId={session.id}
+          onOpenSession={jest.fn()}
+        />,
+        container
+      );
+    });
+
+    const storyPane = container.querySelector('[aria-labelledby="session-stories-heading"]');
+    expect(storyPane?.textContent).toContain('Ready for this session');
+    expect(storyPane?.textContent).not.toContain('Already pointed story');
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it('opens read-only ended-session history from a hosted team card', async () => {
+    const service = createService(true);
+    jest.mocked(service.listVotingTeams).mockResolvedValue([
+      {
+        ...team,
+        relationship: 'Host',
+        endedSessions: [
+          {
+            sessionId: 'ended-history',
+            endedAt: '2026-07-11T12:00:00.000Z',
+            finalizedResultCount: 2
+          }
+        ]
+      }
+    ]);
+    const onOpenSession = jest.fn();
+    await act(async () => {
+      renderVoting(
+        <VotingPage service={service} serviceScope={serviceScope} onOpenSession={onOpenSession} />,
+        container
+      );
+    });
+    const historyButton = Array.from(container.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('2 results')
+    );
+    act(() => historyButton?.click());
+    expect(onOpenSession).toHaveBeenCalledWith(team.teamId, 'ended-history');
+  });
+
+  it('caps recent sessions and opens the complete team session history', async () => {
+    const endedSessions = [
+      {
+        sessionId: 'ended-newest',
+        endedAt: '2026-07-11T12:34:56.000Z',
+        finalizedResultCount: 3
+      },
+      {
+        sessionId: 'ended-middle',
+        endedAt: '2026-07-10T12:34:56.000Z',
+        finalizedResultCount: 2
+      },
+      {
+        sessionId: 'ended-oldest',
+        endedAt: '2026-07-09T12:34:56.000Z',
+        finalizedResultCount: 1
+      }
+    ];
+    const service = createService(true);
+    jest
+      .mocked(service.listVotingTeams)
+      .mockResolvedValue([{ ...team, relationship: 'Host', endedSessions }]);
+    const onViewSessionHistory = jest.fn();
+
+    await act(async () => {
+      renderVoting(
+        <VotingPage
+          service={service}
+          serviceScope={serviceScope}
+          onOpenSession={jest.fn()}
+          onViewSessionHistory={onViewSessionHistory}
+        />,
+        container
+      );
+    });
+
+    const recentHistory = container.querySelector(
+      `[aria-label="${team.title} ended session history"]`
+    );
+    const expectedTimestamp = new Date(endedSessions[0].endedAt).toLocaleString(undefined, {
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit'
+    });
+    expect(recentHistory?.textContent).toContain(expectedTimestamp);
+    expect(recentHistory?.textContent).toContain('3 results');
+    expect(recentHistory?.textContent).toContain('2 results');
+    expect(recentHistory?.textContent).not.toContain('1 result');
+
+    act(() => {
+      Array.from(recentHistory?.querySelectorAll('button') ?? [])
+        .find((button) => button.textContent === 'View session history')
+        ?.click();
+    });
+    expect(onViewSessionHistory).toHaveBeenCalledWith(team.teamId);
+
+    const onOpenSession = jest.fn();
+    const onExitSessionHistory = jest.fn();
+    await act(async () => {
+      renderVoting(
+        <VotingPage
+          service={service}
+          serviceScope={serviceScope}
+          teamId={team.teamId}
+          onOpenSession={onOpenSession}
+          onExitSessionHistory={onExitSessionHistory}
+        />,
+        container
+      );
+    });
+
+    expect(container.textContent).toContain(`${team.title} session history`);
+    expect(container.textContent).toContain('3 results');
+    expect(container.textContent).toContain('2 results');
+    expect(container.textContent).toContain('1 result');
+    act(() => {
+      Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent?.includes('1 result'))
+        ?.click();
+    });
+    expect(onOpenSession).toHaveBeenCalledWith(team.teamId, 'ended-oldest');
+    act(() => {
+      Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent?.includes('Back to Voting'))
+        ?.click();
+    });
+    expect(onExitSessionHistory).toHaveBeenCalledTimes(1);
+    expect(await axe(container)).toHaveNoViolations();
   });
 
   it('opens the existing session identified by team discovery metadata', async () => {
     const service = createService(true);
     service.listVotingTeams.mockResolvedValue([
-      { ...team, activeSessionId: session.id, relationship: 'Host' }
+      { ...team, activeSessionId: session.id, relationship: 'Host', endedSessions: [] }
     ]);
     const onOpenSession = jest.fn();
     await act(async () => {
@@ -366,7 +555,7 @@ describe('VotingPage', () => {
   it('shows an open configured-participant session on the bookmarkable Voting page', async () => {
     const service = createService(false);
     service.listVotingTeams.mockResolvedValue([
-      { ...team, activeSessionId: session.id, relationship: 'Participant' }
+      { ...team, activeSessionId: session.id, relationship: 'Participant', endedSessions: [] }
     ]);
     const onOpenSession = jest.fn();
     await act(async () => {
@@ -839,6 +1028,106 @@ describe('VotingPage', () => {
     );
     expect(container.textContent).toContain('Final estimate: 3');
     expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it('ends a finalized session, exports its summary, and exits focused mode', async () => {
+    const story: PointingStory = {
+      id: 'ended-story',
+      title: 'Completed story',
+      description: '',
+      status: 'Pointed',
+      currentEstimate: '5',
+      estimateHistory: [],
+      createdAt: fixtureDocument.createdAt,
+      createdBy: fixtureUser,
+      updatedAt: fixtureDocument.updatedAt,
+      updatedBy: fixtureUser
+    };
+    const endedSession: VotingSession = {
+      ...session,
+      status: 'Active',
+      rounds: [
+        {
+          id: 'ended-round',
+          storyId: story.id,
+          storySnapshot: { storyId: story.id, title: story.title, description: '' },
+          status: 'Finalized',
+          votes: [
+            {
+              participantId: 'participant-current',
+              value: '5',
+              castAt: fixtureDocument.updatedAt
+            }
+          ],
+          timer: { configuredDurationSeconds: 300, status: 'Stopped', remainingSeconds: 120 },
+          assignedValue: '5',
+          finalizedAt: fixtureDocument.updatedAt,
+          finalizedBy: fixtureUser
+        }
+      ],
+      finalizedRoundIds: ['ended-round']
+    };
+    const service = createService(true, endedSession, 'participant-current', [story]);
+    const onExitFocusedVoting = jest.fn();
+    const createObjectUrl = jest.fn(() => 'blob:session-results');
+    const revokeObjectUrl = jest.fn();
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectUrl });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: revokeObjectUrl });
+    const anchorClick = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation();
+    await act(async () => {
+      renderVoting(
+        <VotingPage
+          service={service}
+          serviceScope={serviceScope}
+          teamId={team.teamId}
+          sessionId={session.id}
+          onOpenSession={jest.fn()}
+          onExitFocusedVoting={onExitFocusedVoting}
+        />,
+        container
+      );
+    });
+    const endButton = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'End session'
+    );
+    const votedStoriesTable = Array.from(container.querySelectorAll('table')).find(
+      (table) => table.querySelector('caption')?.textContent === 'Voted stories'
+    );
+    expect(endButton).toBeDefined();
+    expect(votedStoriesTable?.textContent).toContain('Completed story');
+    expect(votedStoriesTable?.textContent).toContain('5');
+    await act(async () => endButton?.click());
+    expect(document.body.textContent).toContain('read-only history');
+    const confirmEnd = Array.from(document.body.querySelectorAll('button'))
+      .filter((button) => button.textContent === 'End session')
+      .pop();
+
+    await act(async () => confirmEnd?.click());
+
+    expect(service.endSession).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('Voting session ended');
+    expect(container.textContent).toContain('1 finalized result is available.');
+    expect(
+      Array.from(container.querySelectorAll('table')).find(
+        (table) => table.querySelector('caption')?.textContent === 'Voted stories'
+      )?.textContent
+    ).toContain('Completed story');
+    act(() => {
+      Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent === 'Export Results CSV')
+        ?.click();
+    });
+    expect(createObjectUrl).toHaveBeenCalledWith(expect.any(Blob));
+    expect(anchorClick).toHaveBeenCalledTimes(1);
+    expect(revokeObjectUrl).toHaveBeenCalledWith('blob:session-results');
+    act(() => {
+      Array.from(container.querySelectorAll('button'))
+        .find((button) => button.textContent === 'Back to Voting')
+        ?.click();
+    });
+    expect(onExitFocusedVoting).toHaveBeenCalledTimes(1);
+    expect(await axe(container)).toHaveNoViolations();
+    anchorClick.mockRestore();
   });
 
   it('shows synchronized timer controls only to the host', async () => {

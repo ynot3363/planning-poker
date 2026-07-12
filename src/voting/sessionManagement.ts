@@ -60,6 +60,14 @@ export interface VotingSessionContext {
 /** Team entry shown on Voting with the current user's application relationship. */
 export interface VotingTeamSummary extends HostedTeamSummary {
   readonly relationship: 'Host' | 'Participant';
+  readonly endedSessions: readonly VotingEndedSessionSummary[];
+}
+
+/** Read-only ended-session history entry discoverable by current hosts. */
+export interface VotingEndedSessionSummary {
+  readonly sessionId: string;
+  readonly endedAt: string;
+  readonly finalizedResultCount: number;
 }
 
 /** Session-entry operations consumed by normal and focused Voting views. */
@@ -86,6 +94,7 @@ export interface IVotingSessionService {
     roundId: string,
     scaleValue: string
   ): Promise<VotingSession>;
+  endSession(context: VotingSessionContext): Promise<VotingSession>;
   subscribe(context: VotingSessionContext, listener: () => void): () => void;
   markDisconnected(context: VotingSessionContext): void;
   closeSession(context: VotingSessionContext): void;
@@ -144,6 +153,33 @@ export function selectEligibleVotingStories(
   );
 }
 
+/**
+ * Selects stories that belong in the focused session navigation pane.
+ *
+ * @remarks
+ * Ready stories remain actionable. Pointed stories are shown only when they were finalized in the
+ * current session so hosts can review or revise those results without exposing prior-session work.
+ *
+ * @param document - Current synchronized team document.
+ * @param session - Session whose finalized history remains visible.
+ * @returns Ready stories plus stories finalized in this session, in durable team order.
+ */
+export function selectSessionStoryList(
+  document: PlanningPokerDocumentRoot,
+  session: VotingSession
+): readonly PointingStory[] {
+  const finalizedStoryIds = new Set(
+    session.rounds
+      .filter(
+        (round) => round.status === 'Finalized' && session.finalizedRoundIds.indexOf(round.id) >= 0
+      )
+      .map((round) => round.storyId)
+  );
+  return document.stories.filter(
+    (story) => story.status === 'Ready' || finalizedStoryIds.has(story.id)
+  );
+}
+
 /** Coordinates synchronized Lobby creation and entry over one team Fluid document. */
 export class VotingSessionService implements IVotingSessionService {
   private readonly closingHandles = new Set<TeamDocumentHandle>();
@@ -176,14 +212,39 @@ export class VotingSessionService implements IVotingSessionService {
       this.repository.listParticipatingTeams(this.currentUser)
     ]);
     const teams = new Map<string, VotingTeamSummary>();
-    hostedTeams
-      .filter((team) => team.isActive)
-      .forEach((team) => teams.set(team.teamId, { ...team, relationship: 'Host' }));
+    const activeHostedTeams = hostedTeams.filter((team) => team.isActive);
+    const hostedHistory = await Promise.all(
+      activeHostedTeams.map(async (team) => {
+        const handle = await this.repository.loadTeamDocument(team.driveItemId);
+        try {
+          return handle
+            .getSnapshot()
+            .sessions.filter((session) => session.status === 'Ended')
+            .map((session) => ({
+              sessionId: session.id,
+              endedAt: session.endedAt ?? session.updatedAt,
+              finalizedResultCount: session.finalizedRoundIds.length
+            }))
+            .sort((left, right) => right.endedAt.localeCompare(left.endedAt));
+        } finally {
+          handle.dispose();
+        }
+      })
+    );
+    activeHostedTeams.forEach((team, index) =>
+      teams.set(team.teamId, {
+        ...team,
+        relationship: 'Host',
+        endedSessions: hostedHistory[index]
+      })
+    );
     participantTeams
       .filter(
         (team) => team.isActive && team.activeSessionId !== undefined && !teams.has(team.teamId)
       )
-      .forEach((team) => teams.set(team.teamId, { ...team, relationship: 'Participant' }));
+      .forEach((team) =>
+        teams.set(team.teamId, { ...team, relationship: 'Participant', endedSessions: [] })
+      );
     return Array.from(teams.values());
   }
 
@@ -262,7 +323,10 @@ export class VotingSessionService implements IVotingSessionService {
         }
         if (session.status === 'Ended') {
           this.clearAnonymousReconnectState(teamId, session);
-          throw new VotingSessionError('ended-session', 'This voting session has ended.');
+          if (!isHostedBy(document.team, this.currentUser)) {
+            throw new VotingSessionError('ended-session', 'This voting session has ended.');
+          }
+          return this.createContext(team, handle, sessionId);
         }
         if (document.openSessionId !== sessionId) {
           throw new VotingSessionError(
@@ -490,6 +554,37 @@ export class VotingSessionService implements IVotingSessionService {
       await context.handle.waitForSaved();
       await this.repository.updateTeamMetadata(context.handle);
       return context.getSession();
+    } catch (error: unknown) {
+      throw this.normalizeError(error);
+    }
+  }
+
+  /** @inheritdoc */
+  public async endSession(context: VotingSessionContext): Promise<VotingSession> {
+    try {
+      const result = context.handle.endVotingSession(
+        context.getSession().id,
+        this.currentUser,
+        this.now()
+      );
+      if (result !== 'ended' && result !== 'already-ended') {
+        const errors = {
+          'invalid-session': new VotingSessionError(
+            'invalid-session',
+            'This voting session is no longer the open session.'
+          ),
+          'host-required': new VotingSessionError(
+            'host-required',
+            'Only a current team host can end the voting session.'
+          )
+        } as const;
+        throw errors[result];
+      }
+      await context.handle.waitForSaved();
+      await this.repository.updateTeamMetadata(context.handle);
+      const ended = context.getSession();
+      this.clearAnonymousReconnectState(context.team.teamId, ended);
+      return ended;
     } catch (error: unknown) {
       throw this.normalizeError(error);
     }

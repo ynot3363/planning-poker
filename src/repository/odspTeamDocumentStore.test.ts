@@ -721,6 +721,29 @@ describe('OdspTeamDocumentStore', () => {
         presence: expect.objectContaining({ connection: 'Disconnected' })
       })
     ]);
+    expect(
+      handle.endVotingSession(
+        lobby.id,
+        { ...fixtureUser, objectId: 'not-host' },
+        '2026-07-10T00:03:00.000Z'
+      )
+    ).toBe('host-required');
+    expect(handle.endVotingSession(lobby.id, fixtureUser, '2026-07-10T00:03:00.000Z')).toBe(
+      'ended'
+    );
+    const endedSnapshot = handle.getSnapshot();
+    expect(endedSnapshot.openSessionId).toBeUndefined();
+    expect(endedSnapshot.sessions[0]).toMatchObject({
+      status: 'Ended',
+      endedAt: '2026-07-10T00:03:00.000Z'
+    });
+    expect(endedSnapshot.sessions[0].activeRoundId).toBeUndefined();
+    expect(endedSnapshot.sessions[0].rounds).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'round-2', status: 'Cancelled' })])
+    );
+    expect(handle.endVotingSession(lobby.id, fixtureUser, '2026-07-10T00:03:01.000Z')).toBe(
+      'already-ended'
+    );
     unsubscribePresence();
     treeOn.mockRestore();
     runTransaction.mockRestore();
@@ -1051,6 +1074,34 @@ describe('OdspTeamDocumentStore', () => {
         ]
       })
     ]);
+    expect(handle.endVotingSession(session.id, fixtureUser, '2026-07-10T00:07:00.000Z')).toBe(
+      'ended'
+    );
+    const nextSession: VotingSession = {
+      id: 'session-2',
+      teamId: fixtureDocument.team.id,
+      status: 'Lobby',
+      settings: {
+        ...fixtureDocument.team.settings,
+        scaleValues: [...fixtureDocument.team.settings.scaleValues]
+      },
+      participants: [],
+      rounds: [],
+      finalizedRoundIds: [],
+      createdAt: '2026-07-10T00:08:00.000Z',
+      createdBy: { ...fixtureUser },
+      updatedAt: '2026-07-10T00:08:00.000Z',
+      updatedBy: { ...fixtureUser }
+    };
+
+    expect(handle.prepareVotingSession(nextSession, nextSession.updatedAt)).toBe(nextSession.id);
+    expect(handle.getSnapshot()).toMatchObject({
+      openSessionId: nextSession.id,
+      sessions: [
+        { id: session.id, status: 'Ended' },
+        { id: nextSession.id, status: 'Lobby' }
+      ]
+    });
     handle.dispose();
   });
 

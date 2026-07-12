@@ -15,6 +15,7 @@ import type { IParticipantSessionStorage } from './sessionManagement';
 import {
   createSessionShareUrl,
   selectEligibleVotingStories,
+  selectSessionStoryList,
   VotingSessionService
 } from './sessionManagement';
 
@@ -466,6 +467,54 @@ function createHarness(
       listeners.forEach((listener) => listener());
       return 'finalized';
     }),
+    endVotingSession: jest.fn((sessionId, currentUser, timestamp) => {
+      const session = document.sessions.find((candidate) => candidate.id === sessionId);
+      if (session?.status === 'Ended') return 'already-ended';
+      if (
+        session === undefined ||
+        document.openSessionId !== sessionId ||
+        (session.status !== 'Lobby' && session.status !== 'Active')
+      ) {
+        return 'invalid-session';
+      }
+      if (!document.team.hosts.some((host) => host.objectId === currentUser.objectId)) {
+        return 'host-required';
+      }
+      document = {
+        ...document,
+        openSessionId: undefined,
+        sessions: document.sessions.map((candidate) =>
+          candidate.id === sessionId
+            ? {
+                ...candidate,
+                status: 'Ended',
+                activeRoundId: undefined,
+                rounds: candidate.rounds.map((round) =>
+                  round.id === candidate.activeRoundId &&
+                  (round.status === 'Voting' || round.status === 'Revealed')
+                    ? {
+                        ...round,
+                        status: 'Cancelled',
+                        timer: {
+                          configuredDurationSeconds: round.timer.configuredDurationSeconds,
+                          status: 'Stopped',
+                          remainingSeconds: round.timer.remainingSeconds,
+                          stoppedAt: timestamp
+                        }
+                      }
+                    : round
+                ),
+                endedAt: timestamp,
+                endedBy: currentUser,
+                updatedAt: timestamp
+              }
+            : candidate
+        ),
+        updatedAt: timestamp
+      };
+      listeners.forEach((listener) => listener());
+      return 'ended';
+    }),
     setVotingParticipantConnection: jest.fn((sessionId, participantId, connection, timestamp) => {
       document = {
         ...document,
@@ -681,6 +730,25 @@ describe('VotingSessionService', () => {
 
   it('lists hosted teams plus open configured-participant sessions without duplicates', async () => {
     const harness = createHarness();
+    harness.handle.updateSessions(
+      [
+        {
+          id: 'ended-history',
+          teamId: fixtureDocument.team.id,
+          status: 'Ended',
+          settings: fixtureDocument.team.settings,
+          participants: [],
+          rounds: [],
+          finalizedRoundIds: [],
+          endedAt: '2026-07-11T11:00:00.000Z',
+          endedBy: fixtureUser,
+          createdAt: fixtureDocument.createdAt,
+          updatedAt: fixtureDocument.updatedAt
+        }
+      ],
+      undefined,
+      fixtureDocument.updatedAt
+    );
     const participantTeam: HostedTeamSummary = {
       teamId: 'participant-team',
       driveItemId: 'participant-drive',
@@ -694,8 +762,22 @@ describe('VotingSessionService', () => {
     ]);
 
     await expect(harness.service.listVotingTeams()).resolves.toEqual([
-      expect.objectContaining({ teamId: summary.teamId, relationship: 'Host' }),
-      expect.objectContaining({ teamId: participantTeam.teamId, relationship: 'Participant' })
+      expect.objectContaining({
+        teamId: summary.teamId,
+        relationship: 'Host',
+        endedSessions: [
+          {
+            sessionId: 'ended-history',
+            endedAt: '2026-07-11T11:00:00.000Z',
+            finalizedResultCount: 0
+          }
+        ]
+      }),
+      expect.objectContaining({
+        teamId: participantTeam.teamId,
+        relationship: 'Participant',
+        endedSessions: []
+      })
     ]);
   });
 
@@ -880,6 +962,47 @@ describe('VotingSessionService', () => {
     });
   });
 
+  it('ends an unfinished session atomically and retries metadata without reopening it', async () => {
+    const story = {
+      id: 'end-story',
+      title: 'Unfinished story',
+      description: '',
+      status: 'Ready' as const,
+      estimateHistory: [],
+      createdAt: fixtureDocument.createdAt,
+      createdBy: fixtureUser,
+      updatedAt: fixtureDocument.updatedAt,
+      updatedBy: fixtureUser
+    };
+    let nextId = 0;
+    const harness = createHarness(
+      { ...fixtureDocument, stories: [story] },
+      fixtureUser,
+      undefined,
+      () => `end-${(nextId += 1)}`
+    );
+    const prepared = await harness.service.prepareSession(summary);
+    const host = await harness.service.joinSession(summary.teamId, prepared.getSession().id);
+    await harness.service.startVoting(host);
+    await harness.service.selectStory(host, story.id);
+    await harness.service.startTimer(host, host.getSession().activeRoundId as string);
+    jest.mocked(harness.store.updateMetadata).mockRejectedValueOnce(new Error('metadata failed'));
+
+    await expect(harness.service.endSession(host)).rejects.toMatchObject({ code: 'save-failure' });
+
+    expect(harness.getDocument().openSessionId).toBeUndefined();
+    expect(harness.getDocument().sessions[0]).toMatchObject({ status: 'Ended' });
+    expect(harness.getDocument().sessions[0].activeRoundId).toBeUndefined();
+    expect(harness.getDocument().sessions[0].rounds[0]).toMatchObject({
+      status: 'Cancelled',
+      timer: { status: 'Stopped' }
+    });
+    await expect(harness.service.endSession(host)).resolves.toMatchObject({ status: 'Ended' });
+    await expect(
+      harness.service.joinSession(summary.teamId, prepared.getSession().id)
+    ).resolves.toMatchObject({ isHost: true, participantId: undefined });
+  });
+
   it('rejects invalid scale values, stale rounds, and replacement after any vote', async () => {
     const story = {
       id: 'story-ready',
@@ -999,7 +1122,7 @@ describe('VotingSessionService', () => {
       ...fixtureDocument,
       stories: [
         ready,
-        { ...ready, id: 'finalized' },
+        { ...ready, id: 'finalized', status: 'Pointed' as const, currentEstimate: '5' },
         { ...ready, id: 'pointed', status: 'Pointed' as const },
         { ...ready, id: 'archived', status: 'Archived' as const }
       ],
@@ -1008,6 +1131,10 @@ describe('VotingSessionService', () => {
 
     expect(selectEligibleVotingStories(document, activeSession).map((story) => story.id)).toEqual([
       'ready'
+    ]);
+    expect(selectSessionStoryList(document, activeSession).map((story) => story.id)).toEqual([
+      'ready',
+      'finalized'
     ]);
   });
 
@@ -1032,7 +1159,7 @@ describe('VotingSessionService', () => {
     });
   });
 
-  it('reports an ended session explicitly even after its open pointer is cleared', async () => {
+  it('opens ended-session history read-only for a current host', async () => {
     const hostHarness = createHarness();
     const prepared = await hostHarness.service.prepareSession(summary);
     const endedDocument: PlanningPokerDocumentRoot = {
@@ -1044,6 +1171,14 @@ describe('VotingSessionService', () => {
 
     await expect(
       harness.service.joinSession(fixtureDocument.team.id, 'session-new')
+    ).resolves.toMatchObject({ isHost: true, participantId: undefined });
+    const guestHarness = createHarness(endedDocument, {
+      ...fixtureUser,
+      objectId: 'guest',
+      loginName: 'guest@example.com'
+    });
+    await expect(
+      guestHarness.service.joinSession(fixtureDocument.team.id, 'session-new')
     ).rejects.toMatchObject({ code: 'ended-session' });
   });
 
@@ -1078,7 +1213,7 @@ describe('VotingSessionService', () => {
 
     await expect(
       harness.service.joinSession(fixtureDocument.team.id, endedSession.id)
-    ).rejects.toMatchObject({ code: 'ended-session' });
+    ).resolves.toMatchObject({ isHost: true, participantId: undefined });
     expect(values.has(storageKey)).toBe(false);
   });
 });

@@ -13,6 +13,28 @@
   min-inline-size: 0;
 }
 
+.endedSessionList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.sessionHistory {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.sessionHistoryHeader {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
 .teamList > li > section {
   display: flex;
   flex: 1 1 auto;
@@ -83,6 +105,29 @@
   align-items: center;
   display: flex;
   flex: 0 0 auto;
+  gap: 8px;
+}
+
+.endSessionButton {
+  background: '[theme:errorText, default: #a4262c]';
+  border-color: '[theme:errorText, default: #a4262c]';
+  color: '[theme:white, default: #ffffff]';
+}
+
+.endSessionButton:hover,
+.endSessionButton:focus-visible {
+  background: '[theme:errorText, default: #a4262c]';
+  border-color: '[theme:errorText, default: #a4262c]';
+  color: '[theme:white, default: #ffffff]';
+}
+
+.completionPanel {
+  background: '[theme:white, default: #ffffff]';
+  border: 1px solid '[theme:neutralLight, default: #edebe9]';
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 24px;
 }
 
 .copyStatus {
@@ -248,6 +293,11 @@
 .resultsTable {
   border-collapse: collapse;
   inline-size: 100%;
+}
+
+.votedStories {
+  margin-block-start: 12px;
+  overflow-x: auto;
 }
 
 .resultsTable caption {

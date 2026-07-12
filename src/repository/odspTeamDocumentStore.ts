@@ -99,10 +99,12 @@ interface IMutableDocumentRoot {
 
 interface IMutableVotingSession {
   readonly id: string;
-  readonly status: VotingSession['status'];
+  status: VotingSession['status'];
   participants: readonly SessionParticipant[];
   readonly rounds: readonly StoryVotingRound[];
   activeRoundId?: string;
+  endedAt?: string;
+  endedBy?: UserReference;
   updatedAt: string;
 }
 
@@ -724,7 +726,7 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
             selectedSessionId = existing.id;
             return;
           }
-          document.sessions = [...document.sessions, session];
+          appendTreeItem(document.sessions, session);
           document.openSessionId = session.id;
           document.updatedAt = updatedAt;
         });
@@ -1190,6 +1192,56 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
           document.updatedAt = timestamp;
           result = 'finalized';
         });
+        return result;
+      },
+      endVotingSession: (sessionId, currentUser, timestamp) => {
+        let result: import('./teamRepository').VotingEndResult = 'invalid-session';
+        let didEnd = false;
+        Tree.runTransaction(view, (root) => {
+          const document = root as unknown as IMutableDocumentRoot;
+          const sessionNode = document.sessions.find((candidate) => candidate.id === sessionId);
+          if (sessionNode?.status === 'Ended') {
+            result = 'already-ended';
+            return;
+          }
+          if (
+            sessionNode === undefined ||
+            sessionNode.id !== document.openSessionId ||
+            (sessionNode.status !== 'Lobby' && sessionNode.status !== 'Active')
+          ) {
+            return;
+          }
+          if (!document.team.hosts.some((host) => host.objectId === currentUser.objectId)) {
+            result = 'host-required';
+            return;
+          }
+          const activeRound = sessionNode.rounds.find(
+            (candidate) => candidate.id === sessionNode.activeRoundId
+          );
+          if (
+            activeRound !== undefined &&
+            (activeRound.status === 'Voting' || activeRound.status === 'Revealed')
+          ) {
+            const mutableRound = activeRound as unknown as IMutableVotingRound;
+            mutableRound.status = 'Cancelled';
+            if (activeRound.timer.status !== 'Stopped') {
+              mutableRound.timer = stopTimerForReveal(activeRound, timestamp);
+            }
+          }
+          const session = sessionNode as unknown as IMutableVotingSession;
+          session.status = 'Ended';
+          session.activeRoundId = undefined;
+          session.endedAt = timestamp;
+          session.endedBy = copyUserReference(currentUser);
+          session.updatedAt = timestamp;
+          document.openSessionId = undefined;
+          document.updatedAt = timestamp;
+          result = 'ended';
+          didEnd = true;
+        });
+        if (didEnd) {
+          participantPresence.local = { sessionId: '', participantId: '', mode: 'None' };
+        }
         return result;
       },
       setVotingParticipantConnection: setParticipantConnection,

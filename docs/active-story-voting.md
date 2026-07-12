@@ -55,7 +55,9 @@ tab with `noopener noreferrer`.
 The focused route uses a responsive 30/50/20 desktop grid. The left column is a
 keyboard-operable story list with compact two-line description previews,
 right-aligned color-coded status pills, and an independent active-round
-indicator. Selecting a card previews complete story details in the center
+indicator. The list contains Ready stories plus Pointed stories finalized in
+the current session for result review; Pointed work from earlier sessions is
+excluded. Selecting a card previews complete story details in the center
 without changing the active round; host actions remain transactionally guarded.
 The center also owns the ordered vote controls for the active story, separated
 from the story details by spacing and a horizontal divider.

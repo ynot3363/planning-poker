@@ -38,6 +38,7 @@ function createHandle(): TeamDocumentHandle {
     revealVotingRound: jest.fn(() => 'invalid-session'),
     undoVotingRoundReveal: jest.fn(() => 'invalid-session'),
     finalizeVotingRound: jest.fn(() => 'invalid-session'),
+    endVotingSession: jest.fn(() => 'invalid-session'),
     setVotingParticipantConnection: jest.fn(),
     waitForSaved: async () => undefined,
     subscribe: () => jest.fn(),

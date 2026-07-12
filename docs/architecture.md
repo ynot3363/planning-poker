@@ -227,6 +227,11 @@ Tree.runTransaction(view, (root) => {
 });
 ```
 
+Append new items through the SharedTree sequence insertion API. Do not rebuild a
+sequence with a spread of existing hydrated tree nodes: those nodes already have
+parents, and Fluid will reject their reinsertion. A plain-array fallback may be
+used only inside isolated store tests.
+
 Recommended UI pattern:
 
 - Mutate Fluid state.
@@ -261,6 +266,12 @@ estimate appends history without duplicating the finalized-round index. Refresh
 SharePoint discovery metadata after the Fluid finalization is acknowledged; an
 idempotent retry must not duplicate history.
 See `docs/voting-results.md` for the result and assignment contract.
+
+Ending an open session is another host-authorized transaction. It cancels an
+unfinished round, records end audit fields, clears the active round and root
+open-session pointer, and leaves finalized stories unchanged. Ended history is
+read-only; exports derive only aggregate finalized-round summaries from captured
+story snapshots. See `docs/session-completion.md`.
 
 ### Planning Poker Presence
 

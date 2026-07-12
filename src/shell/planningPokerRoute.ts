@@ -72,8 +72,6 @@ export function readPlanningPokerRoute(search: string): IPlanningPokerRouteResul
     notice = 'invalid-identifier';
   } else if (sessionId !== undefined && teamId === undefined) {
     notice = 'incomplete-voting-link';
-  } else if (requestedView === 'Voting' && (teamId === undefined) !== (sessionId === undefined)) {
-    notice = 'incomplete-voting-link';
   }
   return {
     route: {
