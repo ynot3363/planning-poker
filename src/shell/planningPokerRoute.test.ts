@@ -55,9 +55,15 @@ describe('Planning Poker route handling', () => {
 
   it('explains invalid and incomplete route fallbacks without exposing untrusted values', () => {
     expect(readPlanningPokerRoute('planningPokerView=Admin').notice).toBe('invalid-view');
-    expect(readPlanningPokerRoute('planningPokerView=Voting&planningPokerTeam=team-1').notice).toBe(
-      'incomplete-voting-link'
-    );
+    expect(
+      readPlanningPokerRoute('planningPokerView=Voting&planningPokerTeam=team-1')
+    ).toMatchObject({
+      route: { view: 'Voting', teamId: 'team-1', focusedVoting: false },
+      notice: undefined
+    });
+    expect(
+      readPlanningPokerRoute('planningPokerView=Voting&planningPokerSession=session-1').notice
+    ).toBe('incomplete-voting-link');
     expect(
       readPlanningPokerRoute(
         'planningPokerView=Voting&planningPokerTeam=%2Fbad&planningPokerSession=session-1'

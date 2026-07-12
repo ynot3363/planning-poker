@@ -202,3 +202,13 @@ underlying constraint no longer applies.
 - Action: What future contributors should do.
 - References: Relevant paths, story IDs, issue/PR links, or validation commands.
 -->
+
+#### 2026-07-11 - GitHub CLI: use the host environment outside the sandbox
+
+- Context: Sandboxed `gh` commands reported an invalid token even though the host
+  environment had a working authenticated GitHub CLI session.
+- Lesson: Repository GitHub CLI operations require environment elevation so `gh`
+  runs outside the sandbox and can use the host authentication context.
+- Action: Run required `gh` commands with environment elevation instead of
+  treating a sandbox authentication failure as a missing or expired host login.
+- References: `.agents/skills/github/SKILL.md`; `gh repo view`; `gh issue view`.

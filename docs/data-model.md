@@ -39,6 +39,9 @@ team settings at creation time, so later team edits cannot rewrite history.
 - Named participants contain the minimum `UserReference`. Anonymous participants
   contain only a generated alias and technical participant data. No persisted
   field maps an anonymous alias to an authenticated identity.
+- Named sessions retain host audit references. Anonymous sessions omit session
+  user-audit references so their shared session, participant, and vote records
+  contain no authenticated identity values.
 - Timer state stores authoritative timestamps and remaining duration, never a
   per-second write. Expiration is informational and cannot reveal or close a
   round.
@@ -51,18 +54,23 @@ compatibility error: it must not be reset, overwritten, or silently migrated.
 Schema validation checks compatibility and corruption; it is not an
 authorization or tamper-detection mechanism.
 
+US-011 makes session user-audit references optional so Anonymous sessions can
+omit authenticated identity values. Existing `1.0.0` documents remain readable;
+the Fluid view applies the compatible stored-schema upgrade before permitting
+writes through the widened optional-field contract.
+
 ## SharePoint discovery metadata
 
-| Display name | Type | Owner |
-| --- | --- | --- |
-| Title | Built-in text | Team title and `.fluid` file name |
-| Team ID | Single line of text | Immutable team lookup key |
-| Hosts | Person or Group, multiple | Hosted-team discovery |
-| Participants | Person or Group, multiple | Configured roster index |
-| Is Active | Yes/No | Active-team filtering |
-| Schema Version | Single line of text | Compatibility pre-check |
-| Active Session ID | Single line of text | Deep-link session lookup |
-| Last Activity | Date and Time | Summary sorting |
+| Display name      | Type                      | Owner                             |
+| ----------------- | ------------------------- | --------------------------------- |
+| Title             | Built-in text             | Team title and `.fluid` file name |
+| Team ID           | Single line of text       | Immutable team lookup key         |
+| Hosts             | Person or Group, multiple | Hosted-team discovery             |
+| Participants      | Person or Group, multiple | Configured roster index           |
+| Is Active         | Yes/No                    | Active-team filtering             |
+| Schema Version    | Single line of text       | Compatibility pre-check           |
+| Active Session ID | Single line of text       | Deep-link session lookup          |
+| Last Activity     | Date and Time             | Summary sorting                   |
 
 Provisioning supplies display names and types only, then reads back and retains
 SharePoint's actual `InternalName`. Contribute access to the library means a

@@ -28,12 +28,34 @@ function createHandle(document: PlanningPokerDocumentRoot = fixtureDocument): Te
     teamId: document.team.id,
     driveItemId: 'item-id',
     getSnapshot: jest.fn(() => snapshot),
+    getConnectionState: () => 'Connected',
     updateTeam: jest.fn((team: PlanningPokerTeam) => {
       snapshot = { ...snapshot, team, updatedAt: team.updatedAt };
     }),
     updateStories: jest.fn((stories, updatedAt) => {
       snapshot = { ...snapshot, stories, updatedAt };
     }),
+    updateSessions: jest.fn((sessions, openSessionId, updatedAt) => {
+      snapshot = { ...snapshot, sessions, openSessionId, updatedAt };
+    }),
+    prepareVotingSession: jest.fn((session, updatedAt) => {
+      snapshot = {
+        ...snapshot,
+        sessions: [...snapshot.sessions, session],
+        openSessionId: session.id,
+        updatedAt
+      };
+      return session.id;
+    }),
+    joinVotingSession: jest.fn(() => undefined),
+    selectVotingStory: jest.fn(() => 'invalid-session'),
+    castVotingVote: jest.fn(() => 'invalid-session'),
+    updateVotingTimer: jest.fn(() => 'invalid-session'),
+    revealVotingRound: jest.fn(() => 'invalid-session'),
+    undoVotingRoundReveal: jest.fn(() => 'invalid-session'),
+    finalizeVotingRound: jest.fn(() => 'invalid-session'),
+    endVotingSession: jest.fn(() => 'invalid-session'),
+    setVotingParticipantConnection: jest.fn(),
     waitForSaved: jest.fn(async () => undefined),
     subscribe: jest.fn(() => jest.fn()),
     dispose: jest.fn()
@@ -44,6 +66,7 @@ function createStore(handle: TeamDocumentHandle = createHandle()): ITeamDocument
   return {
     list: jest.fn(async () => []),
     listHostedBy: jest.fn(async () => []),
+    listParticipatingIn: jest.fn(async () => []),
     create: jest.fn(async () => handle),
     load: jest.fn(async () => handle),
     rename: jest.fn(async () => undefined),
@@ -83,6 +106,15 @@ describe('TeamRepository', () => {
     await repository.listHostedTeams(fixtureUser);
 
     expect(store.listHostedBy).toHaveBeenCalledWith(fixtureUser);
+  });
+
+  it('delegates configured-participant discovery with the current user', async () => {
+    const store = createStore();
+    const repository = new TeamRepository(storage, store);
+
+    await repository.listParticipatingTeams(fixtureUser);
+
+    expect(store.listParticipatingIn).toHaveBeenCalledWith(fixtureUser);
   });
 
   it('projects the complete SharePoint discovery contract from Fluid state', () => {

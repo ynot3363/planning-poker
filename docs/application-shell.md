@@ -48,6 +48,28 @@ a user-facing explanation. All web-part instances on a page observe the same
 page-level Planning Poker route; deployments that require independent routes
 should place the instances on separate pages.
 
+## Voting Session Entry
+
+The normal Voting destination lists active teams hosted by the current user.
+**Prepare voting** creates one durable Lobby when the team has no open session;
+when SharePoint discovery metadata identifies an existing Lobby or Active
+session, **Open session** resolves that same authoritative Fluid session.
+
+The Lobby snapshots the team's scale, voting mode, and timer settings. It tells
+participants that voting has not started and reserves **Start voting** for a
+current host. Starting is idempotent: a repeated command keeps the same session
+Active. Configured-member status is shown as context only; any authenticated
+user who can access the backing SharePoint library may enter through a valid
+focused link.
+
+The focused session always exposes a read-only link with a **Copy link** action.
+The button reports copied or failed state compactly; the visible link remains
+selectable when browser clipboard permissions are unavailable. Shared links
+contain only the bounded opaque team and session identifiers. Missing,
+inaccessible, inactive, ended, mismatched, and incompatible sessions render
+explicit safe states rather than exposing drive IDs, file names, or transport
+details.
+
 ## Visual State Examples
 
 Expanded shell:
@@ -107,7 +129,7 @@ logical CSS properties.
 - `DestructiveConfirmation` uses a blocking dialog with an explicit consequence,
   destructive confirmation, and quieter cancellation.
 
-Later feature stories should compose these primitives instead of recreating
+Feature stories should compose these primitives instead of recreating
 navigation, cards, status messages, focus behavior, or confirmation treatment.
 
 ## Validation Matrix

@@ -2,7 +2,10 @@ import type {
   PlanningPokerDocumentRoot,
   PlanningPokerTeam,
   PointingStory,
-  UserReference
+  SessionParticipant,
+  UserReference,
+  VoteRecord,
+  VotingSession
 } from '../domain/planningPokerDomain';
 import type { IPlanningPokerStorageConfiguration } from '../storage/storageTypes';
 
@@ -51,7 +54,78 @@ export interface HostedTeamSummary {
   readonly title: string;
   /** Whether the team is available for current work. */
   readonly isActive: boolean;
+  /** Current lobby or active session projected into SharePoint discovery metadata. */
+  readonly activeSessionId?: string;
 }
+
+/** Identity-safe input for a participant join transaction. */
+export type SessionParticipantJoin =
+  | {
+      readonly kind: 'Named';
+      readonly participantId: string;
+      readonly user: UserReference;
+    }
+  | {
+      readonly kind: 'Anonymous';
+      readonly participantId: string;
+    };
+
+/** Expected outcomes from the transaction that selects an active voting story. */
+export type VotingStorySelectionResult =
+  | 'selected'
+  | 'invalid-session'
+  | 'host-required'
+  | 'invalid-story'
+  | 'active-round'
+  | 'round-has-votes';
+
+/** Expected outcomes from the transaction that upserts a participant vote. */
+export type VotingVoteResult =
+  | 'cast'
+  | 'invalid-session'
+  | 'participant-required'
+  | 'invalid-round'
+  | 'invalid-vote';
+
+/** Host timer commands accepted by the active-round transaction. */
+export type VotingTimerCommand = 'start' | 'stop' | 'reset';
+
+/** Expected outcomes from a synchronized timer command. */
+export type VotingTimerResult =
+  | 'updated'
+  | 'invalid-session'
+  | 'host-required'
+  | 'invalid-round'
+  | 'invalid-command'
+  | 'timer-disabled';
+
+/** Expected outcomes from revealing the current voting round. */
+export type VotingRevealResult =
+  | 'revealed'
+  | 'already-revealed'
+  | 'invalid-session'
+  | 'host-required'
+  | 'invalid-round';
+
+/** Expected outcomes from reopening a revealed round for voting. */
+export type VotingUndoRevealResult =
+  | 'reopened'
+  | 'invalid-session'
+  | 'host-required'
+  | 'invalid-round';
+
+/** Expected outcomes from finalizing a revealed estimate. */
+export type VotingFinalizeResult =
+  | 'finalized'
+  | 'already-finalized'
+  | 'invalid-session'
+  | 'host-required'
+  | 'invalid-round'
+  | 'invalid-estimate'
+  | 'invalid-story';
+
+/** Expected outcomes from ending an open voting session. */
+export type VotingEndResult = 'ended' | 'already-ended' | 'invalid-session' | 'host-required';
 
 /** Owns one loaded Fluid document and its subscription lifecycle. */
 export interface TeamDocumentHandle {
@@ -61,6 +135,8 @@ export interface TeamDocumentHandle {
   readonly driveItemId: string;
   /** @returns A plain serializable snapshot of the current shared state. */
   getSnapshot(): PlanningPokerDocumentRoot;
+  /** @returns The current collaboration connection state. */
+  getConnectionState(): 'Connected' | 'Disconnected';
   /**
    * Applies one team mutation through the store's Fluid transaction boundary.
    *
@@ -76,6 +152,103 @@ export interface TeamDocumentHandle {
    * @returns `void` after the local transaction is applied.
    */
   updateStories(stories: readonly PointingStory[], updatedAt: string): void;
+  /**
+   * Replaces session state and its single-open-session pointer in one Fluid transaction.
+   *
+   * @param sessions - Complete ordered session collection.
+   * @param openSessionId - The single Lobby or Active session, when present.
+   * @param updatedAt - ISO timestamp for document Last Activity.
+   */
+  updateSessions(
+    sessions: readonly VotingSession[],
+    openSessionId: string | undefined,
+    updatedAt: string
+  ): void;
+  /**
+   * Creates a Lobby only when the transaction observes no existing open session.
+   *
+   * @param session - Candidate Lobby with an immutable identifier and settings snapshot.
+   * @param updatedAt - ISO timestamp for document Last Activity when creation wins.
+   * @returns The candidate ID, or the existing open Lobby/Active session ID.
+   */
+  prepareVotingSession(session: VotingSession, updatedAt: string): string;
+  /**
+   * Joins or reconnects one participant inside the Fluid transaction boundary.
+   *
+   * @param sessionId - Open Lobby or Active session identifier.
+   * @param participant - Identity-safe participant join request.
+   * @param timestamp - ISO join or reconnect timestamp.
+   * @returns The durable participant selected or created by the transaction.
+   */
+  joinVotingSession(
+    sessionId: string,
+    participant: SessionParticipantJoin,
+    timestamp: string
+  ): SessionParticipant | undefined;
+  /**
+   * Selects or replaces the active story while rechecking host, lifecycle, and eligibility guards.
+   */
+  selectVotingStory(
+    sessionId: string,
+    storyId: string,
+    roundId: string,
+    currentUser: UserReference,
+    replaceActive: boolean,
+    timestamp: string
+  ): VotingStorySelectionResult;
+  /** Upserts one joined participant's vote after rechecking the active round and scale snapshot. */
+  castVotingVote(sessionId: string, roundId: string, vote: VoteRecord): VotingVoteResult;
+  /** Applies one host timer command after rechecking the current active round. */
+  updateVotingTimer(
+    sessionId: string,
+    roundId: string,
+    command: VotingTimerCommand,
+    currentUser: UserReference,
+    timestamp: string
+  ): VotingTimerResult;
+  /** Reveals the current round through a host-authorized manual command. */
+  revealVotingRound(
+    sessionId: string,
+    roundId: string,
+    currentUser: UserReference,
+    timestamp: string
+  ): VotingRevealResult;
+  /** Reopens the current revealed round while preserving its votes and stopped timer. */
+  undoVotingRoundReveal(
+    sessionId: string,
+    roundId: string,
+    currentUser: UserReference,
+    timestamp: string
+  ): VotingUndoRevealResult;
+  /** Finalizes a revealed round and assigns its story estimate atomically. */
+  finalizeVotingRound(
+    sessionId: string,
+    roundId: string,
+    scaleValue: string,
+    currentUser: UserReference,
+    timestamp: string
+  ): VotingFinalizeResult;
+  /** Ends the matching open session and cancels any unfinished active round atomically. */
+  endVotingSession(
+    sessionId: string,
+    currentUser: UserReference,
+    timestamp: string
+  ): VotingEndResult;
+  /**
+   * Updates technical participant presence without deleting durable roster or vote state.
+   *
+   * @param sessionId - Open session identifier.
+   * @param participantId - Durable session participant identifier.
+   * @param connection - Current collaboration connection state.
+   * @param timestamp - ISO presence observation timestamp.
+   * @returns `void` after the local transaction is applied.
+   */
+  setVotingParticipantConnection(
+    sessionId: string,
+    participantId: string,
+    connection: 'Connected' | 'Disconnected',
+    timestamp: string
+  ): void;
   /** @returns A promise that resolves only after Fluid acknowledges the pending mutation. */
   waitForSaved(): Promise<void>;
   /**
@@ -98,6 +271,13 @@ export interface ITeamDocumentStore {
    * @returns Team summaries whose host metadata contains the user.
    */
   listHostedBy(currentUser: UserReference): Promise<readonly HostedTeamSummary[]>;
+  /**
+   * Queries configured-participant metadata for the supplied user.
+   *
+   * @param currentUser - The user whose configured teams should be discovered.
+   * @returns Team summaries whose participant metadata contains the user.
+   */
+  listParticipatingIn(currentUser: UserReference): Promise<readonly HostedTeamSummary[]>;
   /**
    * @param team - The initial team state.
    * @param fileName - The validated Fluid file name.
@@ -224,6 +404,44 @@ export class TeamRepository {
   public async listHostedTeams(currentUser: UserReference): Promise<readonly HostedTeamSummary[]> {
     this.requireStorage();
     return this.store.listHostedBy(currentUser);
+  }
+
+  /**
+   * Lists teams whose configured participant metadata contains the current user.
+   *
+   * @param currentUser - Current delegated user with a site-scoped SharePoint ID.
+   * @returns Matching lightweight team summaries.
+   */
+  public async listParticipatingTeams(
+    currentUser: UserReference
+  ): Promise<readonly HostedTeamSummary[]> {
+    this.requireStorage();
+    return this.store.listParticipatingIn(currentUser);
+  }
+
+  /** @returns All team summaries the delegated user can access through SharePoint. */
+  public async listAccessibleTeams(): Promise<readonly HostedTeamSummary[]> {
+    this.requireStorage();
+    return this.store.list();
+  }
+
+  /**
+   * Resolves one opaque team identifier without relying on a mutable file title.
+   *
+   * @param teamId - Stable team identifier from a validated application route.
+   * @returns The accessible discovery summary.
+   */
+  public async findAccessibleTeam(teamId: string): Promise<HostedTeamSummary> {
+    const team = (await this.listAccessibleTeams()).find(
+      (candidate) => candidate.teamId === teamId
+    );
+    if (team === undefined) {
+      throw new TeamRepositoryError(
+        'not-found',
+        'The team could not be found or is not accessible.'
+      );
+    }
+    return team;
   }
 
   /**

@@ -1,0 +1,505 @@
+.teamList {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.teamList > li,
+.teamCard {
+  display: flex;
+  min-inline-size: 0;
+}
+
+.endedSessionList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.sessionHistory {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.sessionHistoryHeader {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.teamList > li > section {
+  display: flex;
+  flex: 1 1 auto;
+}
+
+.teamCard {
+  block-size: 100%;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.teamCard h2,
+.teamCard p,
+.focusedSession h2,
+.focusedSession h3,
+.focusedSession p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.actions,
+.timerActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.actions {
+  margin-block-start: auto;
+}
+
+.focusedSession {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-inline-size: 0;
+}
+
+.sessionHeader {
+  align-items: center;
+  border-block-end: 1px solid '[theme:neutralLight, default: #edebe9]';
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  padding-block-end: 12px;
+}
+
+.sessionHeader > div:first-child {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-inline-size: 0;
+}
+
+.statusBadge,
+.storyCardStatus {
+  background: '[theme:neutralLighter, default: #f3f2f1]';
+  border-radius: 10px;
+  color: '[theme:neutralSecondary, default: #605e5c]';
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+}
+
+.copyAction {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.endSessionButton {
+  background: '[theme:errorText, default: #a4262c]';
+  border-color: '[theme:errorText, default: #a4262c]';
+  color: '[theme:white, default: #ffffff]';
+}
+
+.endSessionButton:hover,
+.endSessionButton:focus-visible {
+  background: '[theme:errorText, default: #a4262c]';
+  border-color: '[theme:errorText, default: #a4262c]';
+  color: '[theme:white, default: #ffffff]';
+}
+
+.completionPanel {
+  background: '[theme:white, default: #ffffff]';
+  border: 1px solid '[theme:neutralLight, default: #edebe9]';
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 24px;
+}
+
+.copyStatus {
+  block-size: 1px;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  inline-size: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+}
+
+.sessionCard {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-inline-size: 0;
+}
+
+.focusedGrid {
+  align-items: stretch;
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 5fr) minmax(0, 2fr);
+  min-inline-size: 0;
+}
+
+.storyColumn,
+.votingColumn,
+.sessionColumn {
+  background: '[theme:white, default: #ffffff]';
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-inline-size: 0;
+  padding: 16px;
+}
+
+.storyColumn {
+  background: '[theme:neutralLighterAlt, default: #faf9f8]';
+  border-inline-end: 1px solid '[theme:neutralLight, default: #edebe9]';
+  padding: 12px;
+}
+
+.sessionColumn {
+  border-inline-start: 1px solid '[theme:neutralLight, default: #edebe9]';
+}
+
+.storyList,
+.participantList {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.storyCard {
+  background: '[theme:white, default: #ffffff]';
+  border: 1px solid '[theme:neutralLight, default: #edebe9]';
+  border-radius: 4px;
+  color: '[theme:neutralPrimary, default: #323130]';
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  inline-size: 100%;
+  padding: 8px 10px;
+  text-align: start;
+}
+
+.storyCard:hover,
+.storyCard:focus-visible {
+  border-color: '[theme:themePrimary, default: #0078d4]';
+}
+
+.storyCard[aria-pressed='true'] {
+  box-shadow: inset 0 0 0 2px '[theme:themePrimary, default: #0078d4]';
+}
+
+.activeStoryCard {
+  background: '[theme:themeLighterAlt, default: #eff6fc]';
+  border-inline-start: 4px solid '[theme:themePrimary, default: #0078d4]';
+}
+
+.storyCardTitle {
+  font-weight: 600;
+  min-inline-size: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.storyCardHeader {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+  min-inline-size: 0;
+}
+
+.storyCardDescription {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  display: -webkit-box;
+  font-size: 13px;
+  line-height: 1.3;
+  min-block-size: 2.6em;
+  overflow: hidden;
+}
+
+.storyCardStatus {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.storyStatusReady {
+  background: '[theme:themeLighterAlt, default: #eff6fc]';
+  color: '[theme:themeDark, default: #005a9e]';
+}
+
+.storyStatusPointed {
+  background: '[theme:greenLight, default: #dff6dd]';
+  color: '[theme:greenDark, default: #0b6a0b]';
+}
+
+.storyStatusArchived {
+  background: '[theme:neutralLighter, default: #f3f2f1]';
+  color: '[theme:neutralSecondary, default: #605e5c]';
+}
+
+.storyStatusActive {
+  background: '[theme:themeLighter, default: #deecf9]';
+  color: '[theme:themeDark, default: #005a9e]';
+}
+
+.storyDetails,
+.participation,
+.timerPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.votingDetails {
+  border-block-start: 1px solid '[theme:neutralLight, default: #edebe9]';
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-block-start: 12px;
+  padding-block-start: 16px;
+}
+
+.resultsPanel {
+  border-block-start: 1px solid '[theme:neutralLight, default: #edebe9]';
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-block-start: 12px;
+  padding-block-start: 16px;
+}
+
+.resultsTable {
+  border-collapse: collapse;
+  inline-size: 100%;
+}
+
+.votedStories {
+  margin-block-start: 12px;
+  overflow-x: auto;
+}
+
+.resultsTable caption {
+  font-weight: 600;
+  padding-block-end: 8px;
+  text-align: start;
+}
+
+.resultsTable th,
+.resultsTable td {
+  border-block-end: 1px solid '[theme:neutralLight, default: #edebe9]';
+  padding: 8px;
+  text-align: start;
+}
+
+.resultsTable thead th {
+  background: '[theme:neutralLighterAlt, default: #faf9f8]';
+}
+
+.finalEstimateFieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.finalEstimateFieldset legend {
+  font-weight: 600;
+  margin-block-end: 8px;
+}
+
+.assignedEstimate {
+  background: '[theme:greenLight, default: #dff6dd]';
+  border-inline-start: 3px solid '[theme:green, default: #107c10]';
+  font-weight: 600;
+  padding: 12px;
+}
+
+.assignedEstimateRow {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.assignedEstimateRow .assignedEstimate {
+  flex: 1 1 auto;
+}
+
+.finalEstimateActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.storyDetails a {
+  overflow-wrap: anywhere;
+}
+
+.activeStoryHeader {
+  align-items: center;
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+}
+
+.eyebrow,
+.participationCounts,
+.participantStatus,
+.timerStatus {
+  color: '[theme:neutralSecondary, default: #605e5c]';
+}
+
+.eyebrow {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.voteFieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.voteFieldset legend {
+  font-weight: 600;
+  margin-block-end: 8px;
+}
+
+.voteScale {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.selectedVote {
+  background: '[theme:themePrimary, default: #0078d4]';
+  color: '[theme:white, default: #ffffff]';
+}
+
+.voteStatus {
+  color: '[theme:neutralSecondary, default: #605e5c]';
+}
+
+.timerPanel {
+  border-block-end: 1px solid '[theme:neutralLight, default: #edebe9]';
+  padding-block-end: 16px;
+}
+
+.timerValue {
+  font-size: 40px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.timerExpired {
+  background: '[theme:yellowLight, default: #fff4ce]';
+  border-inline-start: 3px solid '[theme:orange, default: #d83b01]';
+  color: '[theme:neutralPrimary, default: #323130]';
+  padding: 8px;
+}
+
+.participantList li {
+  align-items: flex-start;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.participantGroups,
+.participantGroup {
+  display: flex;
+  flex-direction: column;
+}
+
+.participantGroups {
+  gap: 16px;
+}
+
+.participantGroup {
+  gap: 8px;
+}
+
+.participantGroup h4 {
+  font-size: 14px;
+  margin: 0;
+}
+
+.participantGroup h4 span,
+.emptyParticipantGroup {
+  color: '[theme:neutralSecondary, default: #605e5c]';
+  font-weight: 400;
+}
+
+.participantStatus {
+  display: block;
+  font-size: 12px;
+  margin-block-start: 2px;
+}
+
+.currentBadge {
+  background: '[theme:themeLighter, default: #deecf9]';
+  border-radius: 10px;
+  color: '[theme:themeDark, default: #005a9e]';
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+}
+
+@media (max-width: 1100px) {
+  .focusedGrid {
+    grid-template-columns: minmax(220px, 1fr) minmax(0, 2fr);
+  }
+
+  .sessionColumn {
+    border-block-start: 1px solid '[theme:neutralLight, default: #edebe9]';
+    border-inline-start: 0;
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 720px) {
+  .teamList,
+  .focusedGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sessionHeader {
+    align-items: flex-start;
+  }
+
+  .storyColumn,
+  .votingColumn {
+    border-block-end: 1px solid '[theme:neutralLight, default: #edebe9]';
+    border-inline-end: 0;
+  }
+
+  .sessionColumn {
+    border-block-start: 0;
+    border-inline-start: 0;
+    grid-column: auto;
+  }
+}

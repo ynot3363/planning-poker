@@ -19,6 +19,8 @@ export type VotingSessionStatus = 'Lobby' | 'Active' | 'Ended';
 export type VotingRoundStatus = 'Voting' | 'Revealed' | 'Finalized' | 'Cancelled';
 /** The current state of a voting timer. */
 export type TimerStatus = 'Ready' | 'Running' | 'Stopped';
+/** Why a voting round moved from Voting to Revealed. */
+export type RevealReason = 'Automatic' | 'Manual';
 /** The collaborative connection state reported for a participant. */
 export type ConnectionState = 'Connected' | 'Disconnected';
 
@@ -210,6 +212,12 @@ export interface StoryVotingRound {
   readonly revealedAt?: string;
   /** The user who revealed the votes. */
   readonly revealedBy?: UserReference;
+  /** Whether every connected voter completed voting or a host revealed early. */
+  readonly revealReason?: RevealReason;
+  /** Number of valid votes captured when results were revealed. */
+  readonly revealedVotedCount?: number;
+  /** Number of connected eligible voters missing a vote when results were revealed. */
+  readonly revealedMissingCount?: number;
   /** The estimate assigned when the round was finalized. */
   readonly assignedValue?: string;
   /** The ISO timestamp at which the round was finalized. */
@@ -219,7 +227,7 @@ export interface StoryVotingRound {
 }
 
 /** Represents a collaborative voting session for a team. */
-export interface VotingSession extends AuditFields {
+export interface VotingSession {
   /** The stable session identifier. */
   readonly id: string;
   /** The owning team identifier. */
@@ -240,6 +248,14 @@ export interface VotingSession extends AuditFields {
   readonly endedAt?: string;
   /** The user who ended the session. */
   readonly endedBy?: UserReference;
+  /** The ISO timestamp at which the session was created. */
+  readonly createdAt: string;
+  /** The creating host in Named mode; omitted from Anonymous session state. */
+  readonly createdBy?: UserReference;
+  /** The ISO timestamp of the latest session update. */
+  readonly updatedAt: string;
+  /** The updating host in Named mode; omitted from Anonymous session state. */
+  readonly updatedBy?: UserReference;
 }
 
 /** Defines the serializable root state stored in one Fluid container. */

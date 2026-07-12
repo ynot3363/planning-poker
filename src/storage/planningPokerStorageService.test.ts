@@ -174,6 +174,44 @@ describe('PlanningPokerStorageService', () => {
           ]
         };
       }
+      if (path.includes("lists('list-id')?$select=HasUniqueRoleAssignments")) {
+        return { HasUniqueRoleAssignments: false };
+      }
+      if (path.includes("lists('list-id')/roleassignments?")) {
+        return {
+          value: [
+            {
+              Member: { Id: 10, PrincipalType: 8 },
+              RoleDefinitionBindings: [{ RoleTypeKind: 2 }]
+            },
+            {
+              Member: { Id: 20, PrincipalType: 8 },
+              RoleDefinitionBindings: [{ RoleTypeKind: 6 }]
+            }
+          ]
+        };
+      }
+      if (path.includes('_api/web/roleassignments?')) {
+        return {
+          value: [
+            {
+              Member: { Id: 10, PrincipalType: 8 },
+              RoleDefinitionBindings: [{ RoleTypeKind: 2 }]
+            },
+            {
+              Member: { Id: 20, PrincipalType: 8 },
+              RoleDefinitionBindings: [{ RoleTypeKind: 6 }]
+            },
+            {
+              Member: { Id: 30, PrincipalType: 1 },
+              RoleDefinitionBindings: [{ RoleTypeKind: 2 }]
+            }
+          ]
+        };
+      }
+      if (path.includes('roledefinitions/getbytype(3)')) {
+        return { Id: 1073741827 };
+      }
       if (path.includes('/fields')) {
         fieldReadCount += 1;
         return fieldReadCount === 1
@@ -210,14 +248,25 @@ describe('PlanningPokerStorageService', () => {
     );
 
     await expect(service.provision()).resolves.toMatchObject({ driveId: 'drive-id' });
-    expect(postImplementation).toHaveBeenCalledTimes(SHAREPOINT_METADATA_FIELDS.length + 1);
+    expect(postImplementation).toHaveBeenCalledTimes(SHAREPOINT_METADATA_FIELDS.length + 3);
     for (const [path, body] of postImplementation.mock.calls) {
       expect(path).not.toContain("(guid'");
-      expect(body).not.toHaveProperty('__metadata');
+      if (body !== undefined) {
+        expect(body).not.toHaveProperty('__metadata');
+      }
     }
     expect(postImplementation).toHaveBeenCalledWith(
       "_api/web/lists('list-id')",
       expect.objectContaining({ Hidden: true, OnQuickLaunch: false })
+    );
+    expect(postImplementation).toHaveBeenCalledWith(
+      "_api/web/lists('list-id')/breakroleinheritance(copyRoleAssignments=true,clearSubscopes=false)"
+    );
+    expect(postImplementation).toHaveBeenCalledWith(
+      "_api/web/lists('list-id')/roleassignments/addroleassignment(principalid=10,roledefid=1073741827)"
+    );
+    expect(postImplementation.mock.calls.some(([path]) => path.includes('principalid=20'))).toBe(
+      false
     );
     expect(provisioningOrder[provisioningOrder.length - 1]).toBe('hide-library');
     const fieldBodies = postImplementation.mock.calls
@@ -250,6 +299,9 @@ describe('PlanningPokerStorageService', () => {
         return { value: [] };
       }
       if (path.includes("lists('new-list')?$select")) {
+        if (path.includes('HasUniqueRoleAssignments')) {
+          return { HasUniqueRoleAssignments: false };
+        }
         provisioningOrder.push('hydrate-root');
         return {
           Id: 'new-list',
@@ -264,6 +316,9 @@ describe('PlanningPokerStorageService', () => {
             InternalName: `Field${index}`
           }))
         };
+      }
+      if (path.includes('/roleassignments?')) {
+        return { value: [] };
       }
       throw new Error(`Unexpected test path: ${path}`);
     });
@@ -294,12 +349,89 @@ describe('PlanningPokerStorageService', () => {
       driveId: 'drive-id',
       serverRelativeUrl: '/sites/team/PlanningPokerAppData'
     });
+    expect(postImplementation).toHaveBeenCalledWith(
+      '_api/web/lists',
+      expect.objectContaining({
+        BaseTemplate: 101,
+        OnQuickLaunch: false,
+        Title: 'PlanningPokerAppData'
+      })
+    );
     expect(provisioningOrder).toEqual([
       'create-library',
       'hydrate-root',
       'resolve-drive',
       'hide-library'
     ]);
+  });
+
+  it('retries permission repair without breaking inheritance or duplicating stronger roles', async () => {
+    const getImplementation = jest.fn(async (path: string): Promise<unknown> => {
+      if (path.includes('effectiveBasePermissions')) {
+        return { High: 0, Low: 0x00000800 };
+      }
+      if (path.includes('lists?$select')) {
+        return {
+          value: [
+            {
+              Id: 'list-id',
+              Title: 'PlanningPokerAppData',
+              RootFolder: { ServerRelativeUrl: '/sites/team/PlanningPokerAppData' }
+            }
+          ]
+        };
+      }
+      if (path.includes('HasUniqueRoleAssignments')) {
+        return { d: { HasUniqueRoleAssignments: true } };
+      }
+      if (path.includes("lists('list-id')/roleassignments?")) {
+        return {
+          value: [
+            {
+              Member: { Id: '10', PrincipalType: '8' },
+              RoleDefinitionBindings: { results: [{ RoleTypeKind: 3 }] }
+            }
+          ]
+        };
+      }
+      if (path.includes('_api/web/roleassignments?')) {
+        return {
+          value: [
+            {
+              Member: { Id: 10, PrincipalType: 8 },
+              RoleDefinitionBindings: [{ RoleTypeKind: 2 }]
+            }
+          ]
+        };
+      }
+      if (path.includes('/fields')) {
+        return {
+          value: SHAREPOINT_METADATA_FIELDS.map((field, index) => ({
+            Title: field.displayName,
+            InternalName: `Field${index}`
+          }))
+        };
+      }
+      throw new Error(`Unexpected test path: ${path}`);
+    });
+    const transport = createTransport(getImplementation);
+    const service = new PlanningPokerStorageService(
+      transport,
+      createDriveService(async () => [{ id: 'drive-id', sharepointIds: { listId: 'list-id' } }]),
+      {
+        webAbsoluteUrl: 'https://example.sharepoint.com/sites/team',
+        metadataFields: SHAREPOINT_METADATA_FIELDS
+      }
+    );
+
+    await expect(service.provision()).resolves.toMatchObject({ driveId: 'drive-id' });
+
+    const postPaths = jest.mocked(transport.post).mock.calls.map(([path]) => path);
+    expect(postPaths.some((path) => path.includes('breakroleinheritance'))).toBe(false);
+    expect(postPaths.some((path) => path.includes('addroleassignment'))).toBe(false);
+    expect(getImplementation).not.toHaveBeenCalledWith(
+      expect.stringContaining('roledefinitions/getbytype')
+    );
   });
 
   it('blocks provisioning when Manage Lists permission is absent', async () => {

@@ -1,13 +1,56 @@
 const mockCreateContainer = jest.fn();
+const mockGetContainer = jest.fn();
+const mockPresenceListeners = new Map<string, (value: unknown) => void>();
+const mockPresenceBindings = new Map<object, unknown>();
+const mockPresenceAttendees = new Set<object>();
 jest.mock('@fluidframework/odsp-client/beta', () => ({
   OdspClient: class OdspClient {
     public createContainer(...args: unknown[]): Promise<unknown> {
       return mockCreateContainer(...args) as Promise<unknown>;
     }
+
+    public getContainer(...args: unknown[]): Promise<unknown> {
+      return mockGetContainer(...args) as Promise<unknown>;
+    }
   }
 }));
+jest.mock('fluid-framework', () => ({
+  getPresence: jest.fn(() => ({
+    attendees: {
+      getMyself: jest.fn(() => ({ getConnectionStatus: () => 'Connected' })),
+      events: {
+        on: jest.fn((eventName: string, listener: (value: unknown) => void) => {
+          mockPresenceListeners.set(eventName, listener);
+          return () => mockPresenceListeners.delete(eventName);
+        })
+      }
+    },
+    states: {
+      getWorkspace: jest.fn(() => ({
+        states: {
+          participant: {
+            local: { sessionId: '', participantId: '', mode: 'None' },
+            events: {
+              on: jest.fn((eventName: string, listener: (value: unknown) => void) => {
+                mockPresenceListeners.set(eventName, listener);
+                return () => mockPresenceListeners.delete(eventName);
+              })
+            },
+            getRemote: jest.fn((attendee: object) => ({
+              value: () => mockPresenceBindings.get(attendee)
+            })),
+            getStateAttendees: jest.fn(() => Array.from(mockPresenceAttendees))
+          }
+        }
+      }))
+    }
+  }))
+}));
 
+import { SchemaFactory, Tree, TreeViewConfiguration } from '@fluidframework/tree';
+import { createIndependentTreeBeta } from '@fluidframework/tree/beta';
 import { fixtureDocument, fixtureUser } from '../domain/planningPokerFixtures';
+import type { PlanningPokerDocumentRoot, VotingSession } from '../domain/planningPokerDomain';
 import type {
   IPlanningPokerStorageConfiguration,
   ISharePointTransport
@@ -36,6 +79,132 @@ const storage: IPlanningPokerStorageConfiguration = {
 };
 
 const tokenProvider = createOdspTokenProvider(storage.webAbsoluteUrl, async () => 'token');
+const legacyFactory = new SchemaFactory('planning-poker');
+const legacyStringList = legacyFactory.array(legacyFactory.string);
+const LegacyUserReferenceSchema = legacyFactory.object('UserReference', {
+  objectId: legacyFactory.string,
+  displayName: legacyFactory.string,
+  loginName: legacyFactory.string,
+  sharePointUserId: legacyFactory.optional(legacyFactory.number)
+});
+const LegacyTeamSettingsSchema = legacyFactory.object('TeamSettings', {
+  scaleKind: legacyFactory.string,
+  scaleValues: legacyStringList,
+  timerEnabled: legacyFactory.boolean,
+  timerDurationSeconds: legacyFactory.optional(legacyFactory.number),
+  votingMode: legacyFactory.string
+});
+const LegacyTeamSchema = legacyFactory.object('PlanningPokerTeam', {
+  id: legacyFactory.string,
+  title: legacyFactory.string,
+  description: legacyFactory.string,
+  isActive: legacyFactory.boolean,
+  hosts: legacyFactory.array(LegacyUserReferenceSchema),
+  configuredMembers: legacyFactory.array(LegacyUserReferenceSchema),
+  settings: LegacyTeamSettingsSchema,
+  createdAt: legacyFactory.string,
+  createdBy: LegacyUserReferenceSchema,
+  updatedAt: legacyFactory.string,
+  updatedBy: LegacyUserReferenceSchema
+});
+const LegacyEstimateHistoryEntrySchema = legacyFactory.object('EstimateHistoryEntry', {
+  sessionId: legacyFactory.string,
+  roundId: legacyFactory.string,
+  value: legacyFactory.string,
+  finalizedAt: legacyFactory.string,
+  finalizedBy: LegacyUserReferenceSchema
+});
+const LegacyStorySchema = legacyFactory.object('PointingStory', {
+  id: legacyFactory.string,
+  title: legacyFactory.string,
+  description: legacyFactory.string,
+  link: legacyFactory.optional(legacyFactory.string),
+  status: legacyFactory.string,
+  currentEstimate: legacyFactory.optional(legacyFactory.string),
+  estimateHistory: legacyFactory.array(LegacyEstimateHistoryEntrySchema),
+  createdAt: legacyFactory.string,
+  createdBy: LegacyUserReferenceSchema,
+  updatedAt: legacyFactory.string,
+  updatedBy: LegacyUserReferenceSchema
+});
+const LegacyPresenceSchema = legacyFactory.object('ParticipantPresence', {
+  connection: legacyFactory.string,
+  lastSeenAt: legacyFactory.string
+});
+const LegacyNamedParticipantSchema = legacyFactory.object('NamedSessionParticipant', {
+  kind: legacyFactory.string,
+  id: legacyFactory.string,
+  user: LegacyUserReferenceSchema,
+  joinedAt: legacyFactory.string,
+  presence: LegacyPresenceSchema
+});
+const LegacyAnonymousParticipantSchema = legacyFactory.object('AnonymousSessionParticipant', {
+  kind: legacyFactory.string,
+  id: legacyFactory.string,
+  alias: legacyFactory.string,
+  joinedAt: legacyFactory.string,
+  presence: LegacyPresenceSchema
+});
+const LegacyStorySnapshotSchema = legacyFactory.object('StorySnapshot', {
+  storyId: legacyFactory.string,
+  title: legacyFactory.string,
+  description: legacyFactory.string,
+  link: legacyFactory.optional(legacyFactory.string)
+});
+const LegacyVoteSchema = legacyFactory.object('VoteRecord', {
+  participantId: legacyFactory.string,
+  value: legacyFactory.string,
+  castAt: legacyFactory.string
+});
+const LegacyTimerSchema = legacyFactory.object('VotingTimer', {
+  configuredDurationSeconds: legacyFactory.number,
+  status: legacyFactory.string,
+  remainingSeconds: legacyFactory.number,
+  startedAt: legacyFactory.optional(legacyFactory.string),
+  stoppedAt: legacyFactory.optional(legacyFactory.string),
+  resetAt: legacyFactory.optional(legacyFactory.string)
+});
+const LegacyRoundSchema = legacyFactory.object('StoryVotingRound', {
+  id: legacyFactory.string,
+  storyId: legacyFactory.string,
+  storySnapshot: LegacyStorySnapshotSchema,
+  status: legacyFactory.string,
+  votes: legacyFactory.array(LegacyVoteSchema),
+  timer: LegacyTimerSchema,
+  revealedAt: legacyFactory.optional(legacyFactory.string),
+  revealedBy: legacyFactory.optional(LegacyUserReferenceSchema),
+  assignedValue: legacyFactory.optional(legacyFactory.string),
+  finalizedAt: legacyFactory.optional(legacyFactory.string),
+  finalizedBy: legacyFactory.optional(LegacyUserReferenceSchema)
+});
+const LegacySessionSchema = legacyFactory.object('VotingSession', {
+  id: legacyFactory.string,
+  teamId: legacyFactory.string,
+  status: legacyFactory.string,
+  settings: LegacyTeamSettingsSchema,
+  participants: legacyFactory.array([
+    LegacyNamedParticipantSchema,
+    LegacyAnonymousParticipantSchema
+  ]),
+  rounds: legacyFactory.array(LegacyRoundSchema),
+  activeRoundId: legacyFactory.optional(legacyFactory.string),
+  finalizedRoundIds: legacyStringList,
+  endedAt: legacyFactory.optional(legacyFactory.string),
+  endedBy: legacyFactory.optional(LegacyUserReferenceSchema),
+  createdAt: legacyFactory.string,
+  createdBy: legacyFactory.optional(LegacyUserReferenceSchema),
+  updatedAt: legacyFactory.string,
+  updatedBy: legacyFactory.optional(LegacyUserReferenceSchema)
+});
+const LegacyDocumentSchema = legacyFactory.object('PlanningPokerDocumentRoot', {
+  schemaVersion: legacyFactory.string,
+  team: LegacyTeamSchema,
+  stories: legacyFactory.array(LegacyStorySchema),
+  sessions: legacyFactory.array(LegacySessionSchema),
+  openSessionId: legacyFactory.optional(legacyFactory.string),
+  createdAt: legacyFactory.string,
+  updatedAt: legacyFactory.string
+});
 
 function createDriveService(): jest.Mocked<IPlanningPokerDriveService> {
   return {
@@ -61,6 +230,11 @@ function createTransport(
 }
 
 describe('OdspTeamDocumentStore', () => {
+  beforeEach(() => {
+    mockPresenceListeners.clear();
+    mockPresenceBindings.clear();
+    mockPresenceAttendees.clear();
+  });
   it('uses separate SharePoint and push-channel token audiences', async () => {
     const getToken = jest.fn(async () => 'aad-token');
     const provider = createOdspTokenProvider(storage.webAbsoluteUrl, getToken);
@@ -82,7 +256,8 @@ describe('OdspTeamDocumentStore', () => {
             File: { Name: 'Example Team.fluid' },
             PlanningPokerTeamID: fixtureDocument.team.id,
             PlanningPokerIsActive: true,
-            PlanningPokerHosts: [{ Id: 17 }]
+            PlanningPokerHosts: [{ Id: 17 }],
+            PlanningPokerParticipants: [{ Id: 18 }]
           },
           {
             Id: 13,
@@ -90,7 +265,8 @@ describe('OdspTeamDocumentStore', () => {
             File: { Name: 'Other Team.fluid' },
             PlanningPokerTeamID: 'other-team',
             PlanningPokerIsActive: true,
-            PlanningPokerHosts: [{ Id: 99 }]
+            PlanningPokerHosts: [{ Id: 99 }],
+            PlanningPokerParticipants: [{ Id: 17 }]
           }
         ]
       };
@@ -107,6 +283,9 @@ describe('OdspTeamDocumentStore', () => {
       }
     ]);
     expect(driveService.getByPath).toHaveBeenCalledWith('drive-id', 'Example Team.fluid');
+    await expect(
+      store.listParticipatingIn({ ...fixtureUser, sharePointUserId: 17 })
+    ).resolves.toEqual([expect.objectContaining({ teamId: 'other-team', title: 'Other Team' })]);
   });
 
   it('projects resolved people and discovery fields to the SharePoint list item', async () => {
@@ -186,6 +365,388 @@ describe('OdspTeamDocumentStore', () => {
     const handle = await store.create(fixtureDocument.team, 'Example Team.fluid');
 
     expect(handle.getSnapshot()).toEqual(fixtureDocument);
+    const lobby: VotingSession = {
+      id: 'session-1',
+      teamId: fixtureDocument.team.id,
+      status: 'Lobby',
+      settings: fixtureDocument.team.settings,
+      participants: [],
+      rounds: [],
+      finalizedRoundIds: [],
+      createdAt: fixtureDocument.createdAt,
+      createdBy: fixtureUser,
+      updatedAt: fixtureDocument.updatedAt,
+      updatedBy: fixtureUser
+    };
+    const runTransaction = jest
+      .spyOn(Tree, 'runTransaction')
+      .mockImplementation((treeView, change) => {
+        change((treeView as unknown as { root: unknown }).root as never);
+        return undefined as never;
+      });
+    handle.prepareVotingSession(lobby, fixtureDocument.updatedAt);
+    const sessionsBeforeJoin = (root as PlanningPokerDocumentRoot).sessions;
+    expect(
+      handle.joinVotingSession(
+        lobby.id,
+        { kind: 'Named', participantId: 'participant-1', user: fixtureUser },
+        fixtureDocument.updatedAt
+      )
+    ).toMatchObject({ id: 'participant-1', kind: 'Named' });
+    expect((root as PlanningPokerDocumentRoot).sessions).toBe(sessionsBeforeJoin);
+    expect(handle.getSnapshot().sessions[0].participants).toHaveLength(1);
+    expect(
+      handle.joinVotingSession(
+        lobby.id,
+        {
+          kind: 'Named',
+          participantId: 'participant-2',
+          user: {
+            ...fixtureUser,
+            objectId: '00000000-0000-0000-0000-000000000002',
+            displayName: 'Second Voter',
+            loginName: 'second@example.com'
+          }
+        },
+        fixtureDocument.updatedAt
+      )
+    ).toMatchObject({ id: 'participant-2', kind: 'Named' });
+    const readyStory = {
+      id: 'story-1',
+      teamId: fixtureDocument.team.id,
+      title: 'Transactional story',
+      description: 'A synchronized round.',
+      status: 'Ready' as const,
+      estimateHistory: [],
+      createdAt: fixtureDocument.createdAt,
+      createdBy: fixtureUser,
+      updatedAt: fixtureDocument.updatedAt,
+      updatedBy: fixtureUser
+    };
+    handle.updateStories(
+      [readyStory, { ...readyStory, id: 'story-2', title: 'Replacement story' }],
+      fixtureDocument.updatedAt
+    );
+    handle.updateSessions(
+      [{ ...handle.getSnapshot().sessions[0], status: 'Active' }],
+      lobby.id,
+      fixtureDocument.updatedAt
+    );
+    expect(
+      handle.selectVotingStory(
+        lobby.id,
+        readyStory.id,
+        'round-1',
+        fixtureUser,
+        false,
+        fixtureDocument.updatedAt
+      )
+    ).toBe('selected');
+    expect(
+      handle.selectVotingStory(
+        lobby.id,
+        'story-2',
+        'round-2',
+        fixtureUser,
+        true,
+        fixtureDocument.updatedAt
+      )
+    ).toBe('selected');
+    expect(handle.getSnapshot().sessions[0].rounds[0].status).toBe('Cancelled');
+    expect(
+      handle.castVotingVote(lobby.id, 'round-2', {
+        participantId: 'participant-1',
+        value: '3',
+        castAt: fixtureDocument.updatedAt
+      })
+    ).toBe('cast');
+    expect(
+      handle.castVotingVote(lobby.id, 'round-2', {
+        participantId: 'participant-1',
+        value: '5',
+        castAt: fixtureDocument.updatedAt
+      })
+    ).toBe('cast');
+    expect(handle.getSnapshot().sessions[0].rounds[1].votes).toEqual([
+      expect.objectContaining({ participantId: 'participant-1', value: '5' })
+    ]);
+    expect(
+      handle.castVotingVote(lobby.id, 'round-1', {
+        participantId: 'participant-1',
+        value: '8',
+        castAt: fixtureDocument.updatedAt
+      })
+    ).toBe('invalid-round');
+    expect(
+      handle.updateVotingTimer(
+        lobby.id,
+        'round-2',
+        'start',
+        fixtureUser,
+        '2026-07-10T00:01:00.000Z'
+      )
+    ).toBe('updated');
+    expect(handle.getSnapshot().sessions[0].rounds[1].timer.status).toBe('Running');
+    expect(
+      handle.updateVotingTimer(
+        lobby.id,
+        'round-2',
+        'start',
+        fixtureUser,
+        '2026-07-10T00:01:05.000Z'
+      )
+    ).toBe('invalid-command');
+    expect(
+      handle.revealVotingRound(
+        lobby.id,
+        'round-2',
+        {
+          ...fixtureUser,
+          objectId: 'not-a-host',
+          displayName: 'Participant User',
+          loginName: 'participant@example.com'
+        },
+        '2026-07-10T00:01:54.000Z'
+      )
+    ).toBe('host-required');
+    expect(
+      handle.updateVotingTimer(lobby.id, 'round-2', 'stop', fixtureUser, '2026-07-10T00:01:30.000Z')
+    ).toBe('updated');
+    expect(handle.getSnapshot().sessions[0].rounds[1].timer).toMatchObject({
+      status: 'Stopped',
+      remainingSeconds: 270
+    });
+    expect(
+      handle.updateVotingTimer(lobby.id, 'round-2', 'stop', fixtureUser, '2026-07-10T00:01:31.000Z')
+    ).toBe('invalid-command');
+    expect(
+      handle.updateVotingTimer(
+        lobby.id,
+        'round-2',
+        'start',
+        fixtureUser,
+        '2026-07-10T00:01:40.000Z'
+      )
+    ).toBe('updated');
+    expect(handle.getSnapshot().sessions[0].rounds[1].timer).toMatchObject({
+      status: 'Running',
+      remainingSeconds: 270,
+      startedAt: '2026-07-10T00:01:40.000Z'
+    });
+    expect(
+      handle.updateVotingTimer(lobby.id, 'round-2', 'stop', fixtureUser, '2026-07-10T00:01:50.000Z')
+    ).toBe('updated');
+    expect(handle.getSnapshot().sessions[0].rounds[1].timer).toMatchObject({
+      status: 'Stopped',
+      remainingSeconds: 260
+    });
+    expect(
+      handle.updateVotingTimer(
+        lobby.id,
+        'round-2',
+        'reset',
+        fixtureUser,
+        '2026-07-10T00:01:52.000Z'
+      )
+    ).toBe('updated');
+    expect(
+      handle.updateVotingTimer(
+        lobby.id,
+        'round-2',
+        'reset',
+        fixtureUser,
+        '2026-07-10T00:01:53.000Z'
+      )
+    ).toBe('invalid-command');
+    expect(
+      handle.castVotingVote(lobby.id, 'round-2', {
+        participantId: 'participant-2',
+        value: '3',
+        castAt: '2026-07-10T00:02:00.000Z'
+      })
+    ).toBe('cast');
+    expect(handle.getSnapshot().sessions[0].rounds[1]).toMatchObject({
+      status: 'Revealed',
+      revealReason: 'Automatic',
+      revealedVotedCount: 2,
+      revealedMissingCount: 0,
+      timer: { status: 'Stopped' }
+    });
+    expect(
+      handle.castVotingVote(lobby.id, 'round-2', {
+        participantId: 'participant-1',
+        value: '8',
+        castAt: '2026-07-10T00:02:00.500Z'
+      })
+    ).toBe('invalid-round');
+    expect(
+      handle.revealVotingRound(lobby.id, 'round-2', fixtureUser, '2026-07-10T00:02:01.000Z')
+    ).toBe('already-revealed');
+    expect(
+      handle.finalizeVotingRound(
+        lobby.id,
+        'round-2',
+        '100',
+        fixtureUser,
+        '2026-07-10T00:02:02.000Z'
+      )
+    ).toBe('invalid-estimate');
+    expect(
+      handle.finalizeVotingRound(lobby.id, 'round-2', '5', fixtureUser, '2026-07-10T00:02:03.000Z')
+    ).toBe('finalized');
+    expect(handle.getSnapshot().stories[1]).toMatchObject({
+      status: 'Pointed',
+      currentEstimate: '5',
+      estimateHistory: [expect.objectContaining({ sessionId: lobby.id, roundId: 'round-2' })]
+    });
+    expect(
+      handle.finalizeVotingRound(lobby.id, 'round-2', '5', fixtureUser, '2026-07-10T00:02:04.000Z')
+    ).toBe('already-finalized');
+    const finalizedSession = handle.getSnapshot().sessions[0];
+    handle.updateSessions(
+      [
+        {
+          ...finalizedSession,
+          activeRoundId: 'round-2',
+          finalizedRoundIds: [],
+          rounds: finalizedSession.rounds.map((round) =>
+            round.id === 'round-2' ? { ...round, status: 'Voting' as const } : round
+          )
+        }
+      ],
+      lobby.id,
+      '2026-07-10T00:02:05.000Z'
+    );
+    const currentSession = handle.getSnapshot().sessions[0];
+    handle.updateSessions(
+      [
+        {
+          ...currentSession,
+          settings: { ...currentSession.settings, votingMode: 'Anonymous' },
+          participants: [
+            {
+              kind: 'Anonymous',
+              id: 'anonymous-presence',
+              alias: 'Participant 1',
+              joinedAt: fixtureDocument.createdAt,
+              presence: {
+                connection: 'Connected',
+                lastSeenAt: fixtureDocument.updatedAt
+              }
+            }
+          ],
+          rounds: currentSession.rounds.map((round) =>
+            round.id === currentSession.activeRoundId
+              ? {
+                  ...round,
+                  votes: [
+                    {
+                      participantId: 'anonymous-presence',
+                      value: '5',
+                      castAt: fixtureDocument.updatedAt
+                    }
+                  ]
+                }
+              : round
+          )
+        }
+      ],
+      lobby.id,
+      fixtureDocument.updatedAt
+    );
+    const treeOn = jest.spyOn(Tree, 'on').mockReturnValue(jest.fn());
+    const unsubscribePresence = handle.subscribe(jest.fn());
+    const disconnectedAttendee = {
+      getConnectionStatus: () => 'Disconnected',
+      getConnectionId: () => 'connection-1',
+      attendeeId: 'attendee-1'
+    };
+    mockPresenceBindings.set(disconnectedAttendee, {
+      sessionId: lobby.id,
+      participantId: 'anonymous-presence',
+      mode: 'Anonymous'
+    });
+    mockPresenceAttendees.add(disconnectedAttendee);
+
+    mockPresenceListeners.get('attendeeDisconnected')?.(disconnectedAttendee);
+
+    expect(handle.getSnapshot().sessions[0].participants).toHaveLength(0);
+    expect(handle.getSnapshot().sessions[0].rounds[1].votes).toHaveLength(0);
+    const anonymousRemovedSession = handle.getSnapshot().sessions[0];
+    handle.updateSessions(
+      [
+        {
+          ...anonymousRemovedSession,
+          settings: { ...anonymousRemovedSession.settings, votingMode: 'Named' },
+          participants: [
+            {
+              kind: 'Named',
+              id: 'named-presence',
+              user: fixtureUser,
+              joinedAt: fixtureDocument.createdAt,
+              presence: {
+                connection: 'Connected',
+                lastSeenAt: fixtureDocument.updatedAt
+              }
+            }
+          ]
+        }
+      ],
+      lobby.id,
+      fixtureDocument.updatedAt
+    );
+    const disconnectedNamedAttendee = {
+      getConnectionStatus: () => 'Disconnected',
+      getConnectionId: () => 'connection-2',
+      attendeeId: 'attendee-2'
+    };
+    mockPresenceBindings.set(disconnectedNamedAttendee, {
+      sessionId: lobby.id,
+      participantId: 'named-presence',
+      mode: 'Named'
+    });
+    mockPresenceAttendees.add(disconnectedNamedAttendee);
+
+    mockPresenceListeners.get('remoteUpdated')?.({
+      attendee: disconnectedNamedAttendee,
+      value: () => mockPresenceBindings.get(disconnectedNamedAttendee)
+    });
+    mockPresenceBindings.delete(disconnectedNamedAttendee);
+
+    mockPresenceListeners.get('attendeeDisconnected')?.(disconnectedNamedAttendee);
+
+    expect(handle.getSnapshot().sessions[0].participants).toEqual([
+      expect.objectContaining({
+        id: 'named-presence',
+        presence: expect.objectContaining({ connection: 'Disconnected' })
+      })
+    ]);
+    expect(
+      handle.endVotingSession(
+        lobby.id,
+        { ...fixtureUser, objectId: 'not-host' },
+        '2026-07-10T00:03:00.000Z'
+      )
+    ).toBe('host-required');
+    expect(handle.endVotingSession(lobby.id, fixtureUser, '2026-07-10T00:03:00.000Z')).toBe(
+      'ended'
+    );
+    const endedSnapshot = handle.getSnapshot();
+    expect(endedSnapshot.openSessionId).toBeUndefined();
+    expect(endedSnapshot.sessions[0]).toMatchObject({
+      status: 'Ended',
+      endedAt: '2026-07-10T00:03:00.000Z'
+    });
+    expect(endedSnapshot.sessions[0].activeRoundId).toBeUndefined();
+    expect(endedSnapshot.sessions[0].rounds).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'round-2', status: 'Cancelled' })])
+    );
+    expect(handle.endVotingSession(lobby.id, fixtureUser, '2026-07-10T00:03:01.000Z')).toBe(
+      'already-ended'
+    );
+    unsubscribePresence();
+    treeOn.mockRestore();
+    runTransaction.mockRestore();
     await expect(handle.waitForSaved()).resolves.toBeUndefined();
     await store.updateMetadata({
       ...fixtureDocument,
@@ -215,6 +776,333 @@ describe('OdspTeamDocumentStore', () => {
     expect(view.dispose).toHaveBeenCalledTimes(1);
     expect(services.dispose).toHaveBeenCalledTimes(1);
     expect(container.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for a loaded container and applies a writable schema upgrade before reading state', async () => {
+    const openSession = {
+      id: 'session-current',
+      teamId: fixtureDocument.team.id,
+      status: 'Lobby' as const,
+      settings: fixtureDocument.team.settings,
+      participants: [],
+      rounds: [],
+      finalizedRoundIds: [],
+      createdAt: fixtureDocument.createdAt,
+      createdBy: fixtureUser,
+      updatedAt: fixtureDocument.updatedAt,
+      updatedBy: fixtureUser
+    };
+    let root: unknown = fixtureDocument;
+    let connectionState = 1;
+    let canView = true;
+    const view = {
+      get compatibility(): { canInitialize: boolean; canView: boolean; canUpgrade: boolean } {
+        return { canInitialize: false, canView, canUpgrade: true };
+      },
+      get root(): unknown {
+        return root;
+      },
+      initialize: jest.fn(),
+      upgradeSchema: jest.fn(() => {
+        canView = true;
+      }),
+      dispose: jest.fn()
+    };
+    const listeners = new Map<string, () => void>();
+    const container = {
+      initialObjects: { appTree: { viewWith: jest.fn(() => view) } },
+      get connectionState(): number {
+        return connectionState;
+      },
+      isDirty: false,
+      connect: jest.fn(),
+      on: jest.fn((event: string, listener: () => void) => {
+        listeners.set(event, listener);
+      }),
+      off: jest.fn((event: string) => {
+        listeners.delete(event);
+      }),
+      dispose: jest.fn()
+    };
+    const services = { dispose: jest.fn() };
+    mockGetContainer.mockResolvedValueOnce({ container, services });
+    const store = new OdspTeamDocumentStore(
+      storage,
+      createTransport(async () => ({ value: [] })),
+      createDriveService(),
+      tokenProvider
+    );
+    const loading = store.load('drive-item-id');
+    await Promise.resolve();
+    root = {
+      ...fixtureDocument,
+      sessions: [openSession],
+      openSessionId: openSession.id
+    };
+    connectionState = 2;
+    listeners.get('connected')?.();
+
+    const handle = await loading;
+
+    expect(handle.getSnapshot()).toMatchObject({
+      openSessionId: openSession.id,
+      sessions: [expect.objectContaining({ id: openSession.id })]
+    });
+    expect(container.off).toHaveBeenCalledWith('connected', expect.any(Function));
+    expect(view.upgradeSchema).toHaveBeenCalledTimes(1);
+    handle.dispose();
+  });
+
+  it('upgrades and reveals a voting round created with the pre-results SharedTree schema', async () => {
+    const timestamp = '2026-07-10T00:02:00.000Z';
+    const story = {
+      id: 'story-1',
+      teamId: fixtureDocument.team.id,
+      title: 'Real tree story',
+      description: 'Exercises Fluid mutation validation.',
+      status: 'Ready' as const,
+      estimateHistory: [],
+      createdAt: fixtureDocument.createdAt,
+      createdBy: fixtureUser,
+      updatedAt: fixtureDocument.updatedAt,
+      updatedBy: fixtureUser
+    };
+    const secondStory = { ...story, id: 'story-2', title: 'Second real tree story' };
+    const session: VotingSession = {
+      id: 'session-1',
+      teamId: fixtureDocument.team.id,
+      status: 'Active',
+      settings: fixtureDocument.team.settings,
+      participants: [
+        {
+          kind: 'Named',
+          id: 'participant-1',
+          user: fixtureUser,
+          joinedAt: fixtureDocument.createdAt,
+          presence: { connection: 'Connected', lastSeenAt: fixtureDocument.createdAt }
+        },
+        {
+          kind: 'Named',
+          id: 'participant-2',
+          user: {
+            ...fixtureUser,
+            objectId: '00000000-0000-0000-0000-000000000002',
+            displayName: 'Second Voter',
+            loginName: 'second@example.com'
+          },
+          joinedAt: fixtureDocument.createdAt,
+          presence: { connection: 'Disconnected', lastSeenAt: fixtureDocument.createdAt }
+        }
+      ],
+      rounds: [
+        {
+          id: 'round-1',
+          storyId: story.id,
+          storySnapshot: {
+            storyId: story.id,
+            title: story.title,
+            description: story.description
+          },
+          status: 'Voting',
+          votes: [],
+          timer: {
+            configuredDurationSeconds: 300,
+            status: 'Stopped',
+            remainingSeconds: 120,
+            stoppedAt: '2026-07-10T00:01:30.000Z'
+          }
+        }
+      ],
+      activeRoundId: 'round-1',
+      finalizedRoundIds: [],
+      createdAt: fixtureDocument.createdAt,
+      createdBy: fixtureUser,
+      updatedAt: fixtureDocument.updatedAt,
+      updatedBy: fixtureUser
+    };
+    const tree = createIndependentTreeBeta();
+    const legacyView = tree.viewWith(
+      new TreeViewConfiguration({
+        schema: LegacyDocumentSchema,
+        enableSchemaValidation: true
+      })
+    );
+    legacyView.initialize({
+      ...fixtureDocument,
+      stories: [story, secondStory],
+      sessions: [session],
+      openSessionId: session.id
+    } as never);
+    legacyView.dispose();
+    const container = {
+      initialObjects: {
+        appTree: {
+          viewWith: jest.fn((configuration: Parameters<typeof tree.viewWith>[0]) =>
+            tree.viewWith(configuration)
+          )
+        }
+      },
+      connectionState: 2,
+      isDirty: false,
+      connect: jest.fn(),
+      on: jest.fn(),
+      off: jest.fn(),
+      dispose: jest.fn()
+    };
+    const services = { dispose: jest.fn() };
+    mockGetContainer.mockResolvedValueOnce({ container, services });
+    const store = new OdspTeamDocumentStore(
+      storage,
+      createTransport(async () => ({ value: [] })),
+      createDriveService(),
+      tokenProvider
+    );
+
+    const handle = await store.load('drive-item-id');
+    const connectedSecondAttendee = { getConnectionStatus: () => 'Connected' };
+    mockPresenceAttendees.add(connectedSecondAttendee);
+    mockPresenceBindings.set(connectedSecondAttendee, {
+      sessionId: session.id,
+      participantId: 'participant-2',
+      mode: 'Named'
+    });
+    expect(
+      handle.joinVotingSession(
+        session.id,
+        { kind: 'Named', participantId: 'unused-rejoin-id', user: fixtureUser },
+        timestamp
+      )
+    ).toMatchObject({ id: 'participant-1' });
+
+    expect(handle.revealVotingRound(session.id, 'round-1', fixtureUser, timestamp)).toBe(
+      'revealed'
+    );
+    expect(handle.getSnapshot().sessions[0].rounds[0]).toMatchObject({
+      status: 'Revealed',
+      revealedAt: timestamp,
+      revealedBy: fixtureUser,
+      revealReason: 'Manual',
+      revealedVotedCount: 0,
+      revealedMissingCount: 2,
+      timer: {
+        configuredDurationSeconds: 300,
+        status: 'Stopped',
+        remainingSeconds: 120,
+        stoppedAt: '2026-07-10T00:01:30.000Z'
+      }
+    });
+    expect(
+      handle.undoVotingRoundReveal(
+        session.id,
+        'round-1',
+        { ...fixtureUser, objectId: 'not-a-host' },
+        timestamp
+      )
+    ).toBe('host-required');
+    expect(handle.undoVotingRoundReveal(session.id, 'round-1', fixtureUser, timestamp)).toBe(
+      'reopened'
+    );
+    expect(handle.getSnapshot().sessions[0].rounds[0]).toEqual(
+      expect.objectContaining({
+        status: 'Voting',
+        votes: [],
+        timer: expect.objectContaining({ status: 'Stopped', remainingSeconds: 120 })
+      })
+    );
+    expect(handle.getSnapshot().sessions[0].rounds[0].revealedAt).toBeUndefined();
+    expect(handle.revealVotingRound(session.id, 'round-1', fixtureUser, timestamp)).toBe(
+      'revealed'
+    );
+    expect(handle.finalizeVotingRound(session.id, 'round-1', '3', fixtureUser, timestamp)).toBe(
+      'finalized'
+    );
+    expect(
+      handle.selectVotingStory(
+        session.id,
+        secondStory.id,
+        'round-2',
+        fixtureUser,
+        false,
+        '2026-07-10T00:03:00.000Z'
+      )
+    ).toBe('selected');
+    expect(
+      handle.castVotingVote(session.id, 'round-2', {
+        participantId: 'participant-1',
+        value: '5',
+        castAt: '2026-07-10T00:04:00.000Z'
+      })
+    ).toBe('cast');
+    expect(handle.getSnapshot().sessions[0].rounds[1]).toMatchObject({ status: 'Voting' });
+    expect(
+      handle.castVotingVote(session.id, 'round-2', {
+        participantId: 'participant-2',
+        value: '3',
+        castAt: '2026-07-10T00:04:30.000Z'
+      })
+    ).toBe('cast');
+    expect(handle.getSnapshot().sessions[0].rounds[1]).toMatchObject({
+      status: 'Revealed',
+      revealReason: 'Automatic'
+    });
+    expect(
+      handle.finalizeVotingRound(
+        session.id,
+        'round-2',
+        '5',
+        fixtureUser,
+        '2026-07-10T00:05:00.000Z'
+      )
+    ).toBe('finalized');
+    expect(
+      handle.finalizeVotingRound(
+        session.id,
+        'round-2',
+        '8',
+        fixtureUser,
+        '2026-07-10T00:06:00.000Z'
+      )
+    ).toBe('finalized');
+    expect(handle.getSnapshot().stories).toEqual([
+      expect.objectContaining({ id: story.id, currentEstimate: '3' }),
+      expect.objectContaining({
+        id: secondStory.id,
+        currentEstimate: '8',
+        estimateHistory: [
+          expect.objectContaining({ value: '5' }),
+          expect.objectContaining({ value: '8' })
+        ]
+      })
+    ]);
+    expect(handle.endVotingSession(session.id, fixtureUser, '2026-07-10T00:07:00.000Z')).toBe(
+      'ended'
+    );
+    const nextSession: VotingSession = {
+      id: 'session-2',
+      teamId: fixtureDocument.team.id,
+      status: 'Lobby',
+      settings: {
+        ...fixtureDocument.team.settings,
+        scaleValues: [...fixtureDocument.team.settings.scaleValues]
+      },
+      participants: [],
+      rounds: [],
+      finalizedRoundIds: [],
+      createdAt: '2026-07-10T00:08:00.000Z',
+      createdBy: { ...fixtureUser },
+      updatedAt: '2026-07-10T00:08:00.000Z',
+      updatedBy: { ...fixtureUser }
+    };
+
+    expect(handle.prepareVotingSession(nextSession, nextSession.updatedAt)).toBe(nextSession.id);
+    expect(handle.getSnapshot()).toMatchObject({
+      openSessionId: nextSession.id,
+      sessions: [
+        { id: session.id, status: 'Ended' },
+        { id: nextSession.id, status: 'Lobby' }
+      ]
+    });
+    handle.dispose();
   });
 
   it('normalizes recycle access denial and unknown failures', async () => {

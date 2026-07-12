@@ -82,11 +82,23 @@ function createService(
     teamId: document.team.id,
     driveItemId: summary.driveItemId,
     getSnapshot: () => document,
+    getConnectionState: () => 'Connected',
     updateTeam: jest.fn(),
     updateStories: (stories, updatedAt) => {
       document = { ...document, stories, updatedAt };
       publish();
     },
+    updateSessions: jest.fn(),
+    prepareVotingSession: jest.fn((session) => session.id),
+    joinVotingSession: jest.fn(() => undefined),
+    selectVotingStory: jest.fn(() => 'invalid-session'),
+    castVotingVote: jest.fn(() => 'invalid-session'),
+    updateVotingTimer: jest.fn(() => 'invalid-session'),
+    revealVotingRound: jest.fn(() => 'invalid-session'),
+    undoVotingRoundReveal: jest.fn(() => 'invalid-session'),
+    finalizeVotingRound: jest.fn(() => 'invalid-session'),
+    endVotingSession: jest.fn(() => 'invalid-session'),
+    setVotingParticipantConnection: jest.fn(),
     waitForSaved: jest.fn(async () => undefined),
     subscribe: jest.fn(() => jest.fn()),
     dispose: jest.fn()

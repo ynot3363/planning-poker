@@ -24,6 +24,8 @@ import { TeamManagementService } from '../../teams/teamManagementService';
 import type { ITeamManagementService } from '../../teams/teamManagementService';
 import { StoryManagementService } from '../../stories/storyManagement';
 import type { IStoryManagementService } from '../../stories/storyManagement';
+import { VotingSessionService } from '../../voting/sessionManagement';
+import type { IVotingSessionService } from '../../voting/sessionManagement';
 
 import * as strings from 'PlanningPokerWebPartStrings';
 import PlanningPoker from './components/PlanningPoker';
@@ -48,6 +50,7 @@ export default class PlanningPokerWebPart extends BaseClientSideWebPart<IPlannin
     readonly service: ITeamManagementService;
     readonly peopleService: SharePointPeopleService;
     readonly storyService: IStoryManagementService;
+    readonly votingService: IVotingSessionService;
   };
   private _teamManagementError?: string;
 
@@ -189,6 +192,12 @@ export default class PlanningPokerWebPart extends BaseClientSideWebPart<IPlannin
           () => new Date().toISOString()
         ),
         storyService: new StoryManagementService(
+          repository,
+          currentUser,
+          () => crypto.randomUUID(),
+          () => new Date().toISOString()
+        ),
+        votingService: new VotingSessionService(
           repository,
           currentUser,
           () => crypto.randomUUID(),

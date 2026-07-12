@@ -212,7 +212,8 @@ When loading:
 3. Get the shared object.
 4. Create a typed tree view.
 5. Check compatibility.
-6. Upgrade schema if allowed and appropriate.
+6. Upgrade the stored schema whenever `canUpgrade` is true, even when `canView` is already true;
+   a readable older schema may still reject writes to newly added optional fields.
 7. Listen for tree changes.
 
 ## Fluid Mutation Pattern
@@ -226,6 +227,11 @@ Tree.runTransaction(view, (root) => {
 });
 ```
 
+Append new items through the SharedTree sequence insertion API. Do not rebuild a
+sequence with a spread of existing hydrated tree nodes: those nodes already have
+parents, and Fluid will reject their reinsertion. A plain-array fallback may be
+used only inside isolated store tests.
+
 Recommended UI pattern:
 
 - Mutate Fluid state.
@@ -234,6 +240,51 @@ Recommended UI pattern:
 - Avoid rendering directly from Fluid nodes throughout the component tree.
 
 This keeps React components simpler and makes export/debug behavior much easier.
+
+### Planning Poker Round Mutations
+
+Active-story selection and vote upserts must use document-store transaction
+commands rather than replacing a session assembled from a stale UI snapshot.
+The transaction rechecks the open Active session, current round, participant or
+host authority, story lifecycle, and immutable session scale before mutation.
+Round selection captures story content and updates `activeRoundId` atomically;
+votes are keyed by participant ID so changing a selection replaces one record.
+
+React must use privacy-shaped selectors before reveal: the current participant
+may see their own value, Named mode may show voted/not-voted state, and
+Anonymous mode may show aggregate counts. Per-vote operations remain Fluid-only
+and must not trigger SharePoint metadata writes. See
+`docs/active-story-voting.md` for the complete feature contract.
+
+Reveal, reopen, and finalization are separate transaction commands. Reveal
+freezes the round, captures historical voted/missing counts, stops the timer,
+and exposes only privacy-shaped results. Host-authorized reopen applies only to
+the active Revealed round and preserves its votes and stopped timer. Finalization
+atomically updates the round, source story, current estimate, immutable estimate
+history, finalized-round index, and document Last Activity. A corrected final
+estimate appends history without duplicating the finalized-round index. Refresh
+SharePoint discovery metadata after the Fluid finalization is acknowledged; an
+idempotent retry must not duplicate history.
+See `docs/voting-results.md` for the result and assignment contract.
+
+Ending an open session is another host-authorized transaction. It cancels an
+unfinished round, records end audit fields, clears the active round and root
+open-session pointer, and leaves finalized stories unchanged. Ended history is
+read-only; exports derive only aggregate finalized-round summaries from captured
+story snapshots. See `docs/session-completion.md`.
+
+### Planning Poker Presence
+
+Use Fluid Presence attendee state for session-lifetime participant bindings.
+Presence publishes only opaque session and participant IDs plus Named/Anonymous
+mode; it does not persist Microsoft 365 identity-to-alias mappings in
+SharedTree. Service heartbeat/attendee-disconnect events keep Named roster
+entries as Disconnected while excluding them from remaining-voter counts.
+Anonymous attendee disconnect removes that roster entry and its active
+unrevealed vote. Cache the latest attendee binding because the departing
+attendee's remote state may no longer be readable when its disconnect event is
+handled, and reconcile the open roster against connected Presence attendees
+after Presence changes. Do not implement a parallel polling heartbeat.
 
 ## Required Libraries
 

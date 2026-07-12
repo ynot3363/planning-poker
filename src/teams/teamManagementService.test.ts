@@ -23,12 +23,34 @@ function createHandle(): TeamDocumentHandle {
     teamId: fixtureDocument.team.id,
     driveItemId: 'item-id',
     getSnapshot: () => snapshot,
+    getConnectionState: () => 'Connected',
     updateTeam: (team) => {
       snapshot = { ...snapshot, team, updatedAt: team.updatedAt };
     },
     updateStories: (stories, updatedAt) => {
       snapshot = { ...snapshot, stories, updatedAt };
     },
+    updateSessions: (sessions, openSessionId, updatedAt) => {
+      snapshot = { ...snapshot, sessions, openSessionId, updatedAt };
+    },
+    prepareVotingSession: (session, updatedAt) => {
+      snapshot = {
+        ...snapshot,
+        sessions: [...snapshot.sessions, session],
+        openSessionId: session.id,
+        updatedAt
+      };
+      return session.id;
+    },
+    joinVotingSession: () => undefined,
+    selectVotingStory: () => 'invalid-session',
+    castVotingVote: () => 'invalid-session',
+    updateVotingTimer: () => 'invalid-session',
+    revealVotingRound: () => 'invalid-session',
+    undoVotingRoundReveal: () => 'invalid-session',
+    finalizeVotingRound: () => 'invalid-session',
+    endVotingSession: () => 'invalid-session',
+    setVotingParticipantConnection: jest.fn(),
     waitForSaved: async () => undefined,
     subscribe: () => jest.fn(),
     dispose: jest.fn()
@@ -41,6 +63,7 @@ function createService(handle: TeamDocumentHandle = createHandle()): {
 } {
   const store: ITeamDocumentStore = {
     list: jest.fn(async () => []),
+    listParticipatingIn: jest.fn(async () => []),
     listHostedBy: jest.fn(async () => [
       {
         teamId: fixtureDocument.team.id,
