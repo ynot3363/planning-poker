@@ -29,10 +29,22 @@ import type {
   ISharePointTransport
 } from '../storage/storageTypes';
 import type { IGraphDriveItem, IPlanningPokerDriveService } from './graphDriveService';
+import {
+  applyStoryCreate,
+  applyStoryDelete,
+  applyStoryEdit,
+  applyStoryImport,
+  applyStoryTransition,
+  applyTeamActive,
+  applyTeamEdit,
+  applyVotingSessionStart
+} from './intentCommands';
+import type { IntentDocumentRoot } from './intentCommands';
 import { TeamRepositoryError, projectTeamMetadata } from './teamRepository';
 import type {
   HostedTeamSummary,
   ITeamDocumentStore,
+  IntentCommandResult,
   SessionParticipantJoin,
   TeamDocumentHandle
 } from './teamRepository';
@@ -125,6 +137,9 @@ interface IMutableVotingRound {
 
 interface IMutablePointingStory {
   readonly id: string;
+  title: string;
+  description: string;
+  link?: string;
   status: PointingStory['status'];
   currentEstimate?: string;
   readonly estimateHistory: PointingStory['estimateHistory'];
@@ -691,27 +706,54 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
       getSnapshot: () => this.readSnapshot(untypedView),
       getConnectionState: () =>
         container.connectionState === FLUID_CONNECTED_STATE ? 'Connected' : 'Disconnected',
-      updateTeam: (team) => {
+      editTeam: (command) => {
+        let result: IntentCommandResult = { status: 'stale', reason: 'team-not-found' };
         Tree.runTransaction(view, (root) => {
-          const document = root as unknown as IMutableDocumentRoot;
-          document.team = team;
-          document.updatedAt = team.updatedAt;
+          result = applyTeamEdit(root as unknown as IntentDocumentRoot, command);
         });
+        return result;
       },
-      updateStories: (stories, updatedAt) => {
+      setTeamActive: (command) => {
+        let result: IntentCommandResult = { status: 'stale', reason: 'team-not-found' };
         Tree.runTransaction(view, (root) => {
-          const document = root as unknown as IMutableDocumentRoot;
-          document.stories = stories;
-          document.updatedAt = updatedAt;
+          result = applyTeamActive(root as unknown as IntentDocumentRoot, command);
         });
+        return result;
       },
-      updateSessions: (sessions, openSessionId, updatedAt) => {
+      createStory: (command) => {
+        let result: IntentCommandResult = { status: 'rejected', reason: 'host-required' };
         Tree.runTransaction(view, (root) => {
-          const document = root as unknown as IMutableDocumentRoot;
-          document.sessions = sessions;
-          document.openSessionId = openSessionId;
-          document.updatedAt = updatedAt;
+          result = applyStoryCreate(root as unknown as IntentDocumentRoot, command);
         });
+        return result;
+      },
+      importStories: (command) => {
+        let result: IntentCommandResult = { status: 'rejected', reason: 'host-required' };
+        Tree.runTransaction(view, (root) => {
+          result = applyStoryImport(root as unknown as IntentDocumentRoot, command);
+        });
+        return result;
+      },
+      editStory: (command) => {
+        let result: IntentCommandResult = { status: 'rejected', reason: 'host-required' };
+        Tree.runTransaction(view, (root) => {
+          result = applyStoryEdit(root as unknown as IntentDocumentRoot, command);
+        });
+        return result;
+      },
+      transitionStory: (command) => {
+        let result: IntentCommandResult = { status: 'rejected', reason: 'host-required' };
+        Tree.runTransaction(view, (root) => {
+          result = applyStoryTransition(root as unknown as IntentDocumentRoot, command);
+        });
+        return result;
+      },
+      deleteStory: (command) => {
+        let result: IntentCommandResult = { status: 'rejected', reason: 'host-required' };
+        Tree.runTransaction(view, (root) => {
+          result = applyStoryDelete(root as unknown as IntentDocumentRoot, command);
+        });
+        return result;
       },
       prepareVotingSession: (session, updatedAt) => {
         let selectedSessionId = session.id;
@@ -731,6 +773,18 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
           document.updatedAt = updatedAt;
         });
         return selectedSessionId;
+      },
+      startVotingSession: (sessionId, currentUser, updatedAt) => {
+        let result: IntentCommandResult = { status: 'stale', reason: 'session-not-found' };
+        Tree.runTransaction(view, (root) => {
+          result = applyVotingSessionStart(
+            root as unknown as IntentDocumentRoot,
+            sessionId,
+            currentUser,
+            updatedAt
+          );
+        });
+        return result;
       },
       joinVotingSession: (sessionId, participant, timestamp) => {
         let selected: SessionParticipant | undefined;

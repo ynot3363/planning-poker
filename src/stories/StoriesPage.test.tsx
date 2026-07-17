@@ -83,13 +83,15 @@ function createService(
     driveItemId: summary.driveItemId,
     getSnapshot: () => document,
     getConnectionState: () => 'Connected',
-    updateTeam: jest.fn(),
-    updateStories: (stories, updatedAt) => {
-      document = { ...document, stories, updatedAt };
-      publish();
-    },
-    updateSessions: jest.fn(),
+    editTeam: jest.fn(() => ({ status: 'applied' })),
+    setTeamActive: jest.fn(() => ({ status: 'applied' })),
+    createStory: jest.fn(() => ({ status: 'applied' })),
+    importStories: jest.fn(() => ({ status: 'applied' })),
+    editStory: jest.fn(() => ({ status: 'applied' })),
+    transitionStory: jest.fn(() => ({ status: 'applied' })),
+    deleteStory: jest.fn(() => ({ status: 'applied' })),
     prepareVotingSession: jest.fn((session) => session.id),
+    startVotingSession: jest.fn(() => ({ status: 'applied' })),
     joinVotingSession: jest.fn(() => undefined),
     selectVotingStory: jest.fn(() => 'invalid-session'),
     castVotingVote: jest.fn(() => 'invalid-session'),

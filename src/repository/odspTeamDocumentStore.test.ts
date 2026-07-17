@@ -384,6 +384,20 @@ describe('OdspTeamDocumentStore', () => {
         change((treeView as unknown as { root: unknown }).root as never);
         return undefined as never;
       });
+    const setTestSessions = (
+      sessions: readonly VotingSession[],
+      openSessionId: string | undefined,
+      updatedAt: string
+    ): void => {
+      const document = root as {
+        sessions: readonly VotingSession[];
+        openSessionId?: string;
+        updatedAt: string;
+      };
+      document.sessions = sessions;
+      document.openSessionId = openSessionId;
+      document.updatedAt = updatedAt;
+    };
     handle.prepareVotingSession(lobby, fixtureDocument.updatedAt);
     const sessionsBeforeJoin = (root as PlanningPokerDocumentRoot).sessions;
     expect(
@@ -423,15 +437,16 @@ describe('OdspTeamDocumentStore', () => {
       updatedAt: fixtureDocument.updatedAt,
       updatedBy: fixtureUser
     };
-    handle.updateStories(
-      [readyStory, { ...readyStory, id: 'story-2', title: 'Replacement story' }],
-      fixtureDocument.updatedAt
-    );
-    handle.updateSessions(
-      [{ ...handle.getSnapshot().sessions[0], status: 'Active' }],
-      lobby.id,
-      fixtureDocument.updatedAt
-    );
+    expect(
+      handle.importStories({
+        stories: [readyStory, { ...readyStory, id: 'story-2', title: 'Replacement story' }],
+        currentUser: fixtureUser,
+        updatedAt: fixtureDocument.updatedAt
+      })
+    ).toEqual({ status: 'applied' });
+    expect(handle.startVotingSession(lobby.id, fixtureUser, fixtureDocument.updatedAt)).toEqual({
+      status: 'applied'
+    });
     expect(
       handle.selectVotingStory(
         lobby.id,
@@ -603,7 +618,7 @@ describe('OdspTeamDocumentStore', () => {
       handle.finalizeVotingRound(lobby.id, 'round-2', '5', fixtureUser, '2026-07-10T00:02:04.000Z')
     ).toBe('already-finalized');
     const finalizedSession = handle.getSnapshot().sessions[0];
-    handle.updateSessions(
+    setTestSessions(
       [
         {
           ...finalizedSession,
@@ -618,7 +633,7 @@ describe('OdspTeamDocumentStore', () => {
       '2026-07-10T00:02:05.000Z'
     );
     const currentSession = handle.getSnapshot().sessions[0];
-    handle.updateSessions(
+    setTestSessions(
       [
         {
           ...currentSession,
@@ -673,7 +688,7 @@ describe('OdspTeamDocumentStore', () => {
     expect(handle.getSnapshot().sessions[0].participants).toHaveLength(0);
     expect(handle.getSnapshot().sessions[0].rounds[1].votes).toHaveLength(0);
     const anonymousRemovedSession = handle.getSnapshot().sessions[0];
-    handle.updateSessions(
+    setTestSessions(
       [
         {
           ...anonymousRemovedSession,

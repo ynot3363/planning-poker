@@ -43,6 +43,14 @@ The Fluid document remains authoritative. A team listed through stale host
 metadata cannot be edited unless the loaded Fluid host list also contains the
 current stable identity.
 
+The edit panel keeps a plain baseline snapshot only to render the draft and
+detect conflicts. Saving runs a focused live-tree command. If another client
+changed the team after that baseline, the command leaves current hosts,
+configured members, settings, activity, and audit values untouched and asks the
+user to reload. This prevents a stale form from restoring a removed host or
+overwriting newer settings. The card-level Activate/Deactivate command owns
+only `isActive`, so it preserves concurrent roster and settings work.
+
 Inactive teams stay visible and editable, but later workflows must not start a
 new voting session for them. Editing settings does not alter settings captured
 by historical sessions.

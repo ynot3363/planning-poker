@@ -5,6 +5,7 @@ import type {
   UserReference
 } from '../domain/planningPokerDomain';
 import type { IPlanningPokerStorageConfiguration } from '../storage/storageTypes';
+import { applyVotingSessionStart } from '../repository/intentCommands';
 import { TeamRepository } from '../repository/teamRepository';
 import type {
   HostedTeamSummary,
@@ -48,20 +49,22 @@ function createHarness(
   readonly handle: TeamDocumentHandle;
   readonly store: ITeamDocumentStore;
   getDocument(): PlanningPokerDocumentRoot;
+  setDocument(document: PlanningPokerDocumentRoot): void;
 } {
-  let document = initial;
+  let document = JSON.parse(JSON.stringify(initial)) as PlanningPokerDocumentRoot;
   const listeners = new Set<() => void>();
   const handle: TeamDocumentHandle = {
     teamId: document.team.id,
     driveItemId: summary.driveItemId,
     getSnapshot: () => document,
     getConnectionState: () => 'Connected',
-    updateTeam: jest.fn(),
-    updateStories: jest.fn(),
-    updateSessions: jest.fn((sessions, openSessionId, updatedAt) => {
-      document = { ...document, sessions, openSessionId, updatedAt };
-      listeners.forEach((listener) => listener());
-    }),
+    editTeam: jest.fn(() => ({ status: 'applied' })),
+    setTeamActive: jest.fn(() => ({ status: 'applied' })),
+    createStory: jest.fn(() => ({ status: 'applied' })),
+    importStories: jest.fn(() => ({ status: 'applied' })),
+    editStory: jest.fn(() => ({ status: 'applied' })),
+    transitionStory: jest.fn(() => ({ status: 'applied' })),
+    deleteStory: jest.fn(() => ({ status: 'applied' })),
     prepareVotingSession: jest.fn((candidate, updatedAt) => {
       const existing = document.sessions.find(
         (current) =>
@@ -79,6 +82,13 @@ function createHarness(
       };
       listeners.forEach((listener) => listener());
       return candidate.id;
+    }),
+    startVotingSession: jest.fn((sessionId, currentUser, updatedAt) => {
+      const result = applyVotingSessionStart(document, sessionId, currentUser, updatedAt);
+      if (result.status === 'applied') {
+        listeners.forEach((listener) => listener());
+      }
+      return result;
     }),
     joinVotingSession: jest.fn((sessionId, join, timestamp) => {
       const session = document.sessions.find((candidate) => candidate.id === sessionId);
@@ -559,7 +569,10 @@ function createHarness(
     ),
     handle,
     store,
-    getDocument: () => document
+    getDocument: () => document,
+    setDocument: (nextDocument) => {
+      document = nextDocument;
+    }
   };
 }
 
@@ -590,7 +603,7 @@ describe('VotingSessionService', () => {
     const reopened = await harness.service.prepareSession(summary);
 
     expect(reopened.getSession().id).toBe(prepared.getSession().id);
-    expect(harness.handle.updateSessions).not.toHaveBeenCalled();
+    expect(harness.handle.prepareVotingSession).not.toHaveBeenCalled();
   });
 
   it('converges concurrent prepare attempts on one transactionally guarded Lobby', async () => {
@@ -704,14 +717,10 @@ describe('VotingSessionService', () => {
   it('starts voting once and treats a repeated start as idempotent', async () => {
     const harness = createHarness();
     const context = await harness.service.prepareSession(summary);
-    const updatesAfterPrepare = (harness.handle.updateSessions as jest.Mock).mock.calls.length;
-
     await expect(harness.service.startVoting(context)).resolves.toMatchObject({ status: 'Active' });
     await expect(harness.service.startVoting(context)).resolves.toMatchObject({ status: 'Active' });
 
-    expect((harness.handle.updateSessions as jest.Mock).mock.calls.length).toBe(
-      updatesAfterPrepare + 1
-    );
+    expect(harness.handle.startVotingSession).toHaveBeenCalledTimes(1);
   });
 
   it('synchronizes the Lobby-to-Active transition to another subscribed context', async () => {
@@ -730,8 +739,9 @@ describe('VotingSessionService', () => {
 
   it('lists hosted teams plus open configured-participant sessions without duplicates', async () => {
     const harness = createHarness();
-    harness.handle.updateSessions(
-      [
+    harness.setDocument({
+      ...harness.getDocument(),
+      sessions: [
         {
           id: 'ended-history',
           teamId: fixtureDocument.team.id,
@@ -746,9 +756,9 @@ describe('VotingSessionService', () => {
           updatedAt: fixtureDocument.updatedAt
         }
       ],
-      undefined,
-      fixtureDocument.updatedAt
-    );
+      openSessionId: undefined,
+      updatedAt: fixtureDocument.updatedAt
+    });
     const participantTeam: HostedTeamSummary = {
       teamId: 'participant-team',
       driveItemId: 'participant-drive',

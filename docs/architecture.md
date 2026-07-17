@@ -241,6 +241,31 @@ Recommended UI pattern:
 
 This keeps React components simpler and makes export/debug behavior much easier.
 
+### Command and Read-Model Separation
+
+Plain snapshots returned by a team document handle are presentation read models.
+They must never be edited into a complete replacement for `team`, `stories`, or
+`sessions`. The public handle exposes intent-specific commands instead: a team
+form edit or activity toggle, one story create/edit/transition/delete, one
+atomic import batch, and the Lobby-to-Active transition.
+
+Each command receives stable entity IDs, the minimum validated values, and any
+observed version needed for conflict detection. Its synchronous SharedTree
+transaction locates the current hydrated node, rechecks host, lifecycle,
+open-round, and immutable-history rules, then patches only fields owned by that
+action. Story creates and imports append detached schema values through the
+sequence insertion API; they never spread hydrated nodes into a replacement
+array.
+
+Commands return a discriminated `applied`, `idempotent`, `conflict`, `stale`, or
+`rejected` result. Services translate failures into non-sensitive recovery
+guidance and wait for Fluid save acknowledgement before refreshing SharePoint
+metadata. For example, an edit created from an older story `updatedAt` returns a
+conflict if finalization changed that story in the meantime; it cannot restore
+the older status, estimate, or history. A repeated create with the same stable
+ID and creation fields is idempotent, while a different entity using that ID is
+a conflict.
+
 ### Planning Poker Round Mutations
 
 Active-story selection and vote upserts must use document-store transaction

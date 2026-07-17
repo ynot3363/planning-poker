@@ -4,9 +4,12 @@ import type {
   StoryStatus,
   UserReference
 } from '../domain/planningPokerDomain';
-import { canTransitionStory, validateDocumentInvariants } from '../domain/planningPokerValidation';
 import { TeamRepository, TeamRepositoryError, isHostedBy } from '../repository/teamRepository';
-import type { HostedTeamSummary, TeamDocumentHandle } from '../repository/teamRepository';
+import type {
+  HostedTeamSummary,
+  IntentCommandResult,
+  TeamDocumentHandle
+} from '../repository/teamRepository';
 
 /** Editable story content; audit and lifecycle fields remain system-owned. */
 export interface StoryFormValues {
@@ -35,7 +38,13 @@ export type StoryMutationResult =
       readonly isSaved: false;
       readonly fieldErrors: StoryFormErrors;
       readonly message?: string;
-      readonly code?: 'active-round' | 'not-found' | 'access-denied' | 'save-failure';
+      readonly code?:
+        | 'active-round'
+        | 'not-found'
+        | 'access-denied'
+        | 'conflict'
+        | 'stale'
+        | 'save-failure';
     };
 
 /** Host-facing story operations consumed by the Stories destination. */
@@ -233,7 +242,13 @@ export class StoryManagementService implements IStoryManagementService {
       updatedAt: timestamp,
       updatedBy: this.currentUser
     };
-    return this.persist(session, [...session.getDocument().stories, story]);
+    return this.persistCommand(session, () =>
+      session.handle.createStory({
+        story,
+        currentUser: this.currentUser,
+        updatedAt: timestamp
+      })
+    );
   }
 
   /** @inheritdoc */
@@ -251,22 +266,18 @@ export class StoryManagementService implements IStoryManagementService {
     if (current === undefined) {
       return Promise.resolve(this.failure('not-found', 'The story could not be found.'));
     }
-    if (isStoryInOpenRound(document, storyId)) {
-      return Promise.resolve(this.activeRoundFailure());
-    }
     const link = normalizeStoryLink(values.link).link;
-    const updatedContent: PointingStory = {
-      ...current,
-      title: values.title.trim(),
-      description: values.description.trim(),
-      ...(link === undefined ? {} : { link }),
-      updatedAt: this.now(),
-      updatedBy: this.currentUser
-    };
-    const updated = link === undefined ? omitStoryLink(updatedContent) : updatedContent;
-    return this.persist(
-      session,
-      document.stories.map((story) => (story.id === storyId ? updated : story))
+    const updatedAt = this.now();
+    return this.persistCommand(session, () =>
+      session.handle.editStory({
+        storyId,
+        expectedUpdatedAt: current.updatedAt,
+        title: values.title.trim(),
+        description: values.description.trim(),
+        ...(link === undefined ? {} : { link }),
+        currentUser: this.currentUser,
+        updatedAt
+      })
     );
   }
 
@@ -302,7 +313,13 @@ export class StoryManagementService implements IStoryManagementService {
           updatedBy: this.currentUser
         };
       });
-      return this.persist(session, [...session.getDocument().stories, ...imported]);
+      return this.persistCommand(session, () =>
+        session.handle.importStories({
+          stories: imported,
+          currentUser: this.currentUser,
+          updatedAt: timestamp
+        })
+      );
     } catch {
       return Promise.resolve(
         this.failure('save-failure', 'No stories were imported. Review the file and try again.')
@@ -327,16 +344,13 @@ export class StoryManagementService implements IStoryManagementService {
 
   /** @inheritdoc */
   public deleteStory(session: StoryTeamSession, storyId: string): Promise<StoryMutationResult> {
-    const document = session.getDocument();
-    if (!document.stories.some((story) => story.id === storyId)) {
-      return Promise.resolve(this.failure('not-found', 'The story could not be found.'));
-    }
-    if (isStoryInOpenRound(document, storyId)) {
-      return Promise.resolve(this.activeRoundFailure());
-    }
-    return this.persist(
-      session,
-      document.stories.filter((story) => story.id !== storyId)
+    const updatedAt = this.now();
+    return this.persistCommand(session, () =>
+      session.handle.deleteStory({
+        storyId,
+        currentUser: this.currentUser,
+        updatedAt
+      })
     );
   }
 
@@ -355,53 +369,34 @@ export class StoryManagementService implements IStoryManagementService {
     status: StoryStatus,
     allowedFrom: readonly StoryStatus[]
   ): Promise<StoryMutationResult> {
-    const document = session.getDocument();
-    const current = document.stories.find((story) => story.id === storyId);
-    if (current === undefined) {
-      return Promise.resolve(this.failure('not-found', 'The story could not be found.'));
-    }
-    if (isStoryInOpenRound(document, storyId)) {
-      return Promise.resolve(this.activeRoundFailure());
-    }
-    if (allowedFrom.indexOf(current.status) < 0 || !canTransitionStory(current.status, status)) {
-      return Promise.resolve(
-        this.failure('save-failure', `A ${current.status} story cannot be changed to ${status}.`)
-      );
-    }
-    const updated: PointingStory = {
-      ...current,
-      status,
-      updatedAt: this.now(),
-      updatedBy: this.currentUser
-    };
-    return this.persist(
-      session,
-      document.stories.map((story) => (story.id === storyId ? updated : story))
+    const updatedAt = this.now();
+    return this.persistCommand(session, () =>
+      session.handle.transitionStory({
+        storyId,
+        status,
+        allowedFrom,
+        currentUser: this.currentUser,
+        updatedAt
+      })
     );
   }
 
   /**
-   * Persists one complete story collection and refreshes Last Activity metadata.
+   * Applies one focused command and refreshes metadata only after Fluid acknowledgement.
    *
    * @param session - Live story session.
-   * @param stories - Complete next ordered story collection.
+   * @param apply - Synchronous store command that rechecks current shared state.
    * @returns The durable mutation outcome.
    */
-  private async persist(
+  private async persistCommand(
     session: StoryTeamSession,
-    stories: readonly PointingStory[]
+    apply: () => IntentCommandResult
   ): Promise<StoryMutationResult> {
     try {
-      const document = session.getDocument();
-      if (!isHostedBy(document.team, this.currentUser)) {
-        return this.failure('access-denied', 'Only a current team host can manage stories.');
+      const result = apply();
+      if (result.status !== 'applied' && result.status !== 'idempotent') {
+        return this.mapCommandFailure(result);
       }
-      const updatedAt = this.now();
-      const nextDocument = { ...document, stories, updatedAt };
-      if (validateDocumentInvariants(nextDocument).length > 0) {
-        return this.failure('save-failure', 'The story change would make the team invalid.');
-      }
-      session.handle.updateStories(stories, updatedAt);
       await session.handle.waitForSaved();
       await this.repository.updateTeamMetadata(session.handle);
       return { isSaved: true };
@@ -419,6 +414,37 @@ export class StoryManagementService implements IStoryManagementService {
   }
 
   /**
+   * Maps a rejected live-tree command to actionable, non-sensitive UI feedback.
+   *
+   * @param result - Store outcome that did not apply or match an idempotent retry.
+   * @returns A failed story mutation result.
+   */
+  private mapCommandFailure(
+    result: Exclude<IntentCommandResult, { readonly status: 'applied' | 'idempotent' }>
+  ): StoryMutationResult {
+    switch (result.reason) {
+      case 'host-required':
+        return this.failure('access-denied', 'Only a current team host can manage stories.');
+      case 'story-in-open-round':
+        return this.activeRoundFailure();
+      case 'story-not-found':
+        return this.failure('not-found', 'The story no longer exists. Reload the story list.');
+      case 'story-changed':
+        return this.failure(
+          'conflict',
+          'This story changed in another window. Reload its latest content and try again.'
+        );
+      case 'invalid-transition':
+        return this.failure(
+          'stale',
+          'The story status changed before this action completed. Reload and try again.'
+        );
+      default:
+        return this.failure('save-failure', 'The story change conflicted with current team state.');
+    }
+  }
+
+  /**
    * Creates a safe failed mutation result.
    *
    * @param code - Stable failure category.
@@ -426,7 +452,7 @@ export class StoryManagementService implements IStoryManagementService {
    * @returns A failed mutation result.
    */
   private failure(
-    code: 'active-round' | 'not-found' | 'access-denied' | 'save-failure',
+    code: 'active-round' | 'not-found' | 'access-denied' | 'conflict' | 'stale' | 'save-failure',
     message: string
   ): StoryMutationResult {
     return { isSaved: false, fieldErrors: {}, code, message };
@@ -439,25 +465,4 @@ export class StoryManagementService implements IStoryManagementService {
       'Finalize or end the open voting round before changing this story.'
     );
   }
-}
-
-/**
- * Copies a story while deliberately omitting its optional link property.
- *
- * @param story - Story whose link is being cleared.
- * @returns A serializable story without an `undefined` link value.
- */
-function omitStoryLink(story: PointingStory): PointingStory {
-  return {
-    id: story.id,
-    title: story.title,
-    description: story.description,
-    status: story.status,
-    ...(story.currentEstimate === undefined ? {} : { currentEstimate: story.currentEstimate }),
-    estimateHistory: story.estimateHistory,
-    createdAt: story.createdAt,
-    createdBy: story.createdBy,
-    updatedAt: story.updatedAt,
-    updatedBy: story.updatedBy
-  };
 }

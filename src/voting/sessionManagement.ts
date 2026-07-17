@@ -365,18 +365,19 @@ export class VotingSessionService implements IVotingSessionService {
     if (current.status === 'Ended') {
       throw new VotingSessionError('ended-session', 'This voting session has ended.');
     }
-    const timestamp = this.now();
-    const started: VotingSession = {
-      ...current,
-      status: 'Active',
-      updatedAt: timestamp,
-      ...(current.settings.votingMode === 'Named' ? { updatedBy: this.currentUser } : {})
-    };
-    context.handle.updateSessions(
-      document.sessions.map((session) => (session.id === started.id ? started : session)),
-      started.id,
-      timestamp
-    );
+    const result = context.handle.startVotingSession(current.id, this.currentUser, this.now());
+    if (result.status !== 'applied' && result.status !== 'idempotent') {
+      if (result.reason === 'host-required') {
+        throw new VotingSessionError('host-required', 'Only a current team host can start voting.');
+      }
+      if (result.reason === 'session-not-lobby') {
+        throw new VotingSessionError('ended-session', 'This voting session can no longer start.');
+      }
+      throw new VotingSessionError(
+        'invalid-session',
+        'This voting session changed in another window. Reload it and try again.'
+      );
+    }
     try {
       await context.handle.waitForSaved();
       await this.repository.updateTeamMetadata(context.handle);

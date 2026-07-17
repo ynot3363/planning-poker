@@ -3,6 +3,8 @@ import type {
   PlanningPokerTeam,
   PointingStory,
   SessionParticipant,
+  StoryStatus,
+  TeamSettings,
   UserReference,
   VoteRecord,
   VotingSession
@@ -20,6 +22,7 @@ export type TeamRepositoryErrorCode =
   | 'invalid-title'
   | 'invalid-team'
   | 'host-mismatch'
+  | 'stale-command'
   | 'disconnected'
   | 'save-timeout'
   | 'metadata-sync'
@@ -127,6 +130,94 @@ export type VotingFinalizeResult =
 /** Expected outcomes from ending an open voting session. */
 export type VotingEndResult = 'ended' | 'already-ended' | 'invalid-session' | 'host-required';
 
+/** Safe reasons returned when an intent command cannot change current shared state. */
+export type IntentCommandFailureReason =
+  | 'team-not-found'
+  | 'host-required'
+  | 'invalid-team'
+  | 'team-changed'
+  | 'story-not-found'
+  | 'story-changed'
+  | 'story-in-open-round'
+  | 'invalid-transition'
+  | 'duplicate-id'
+  | 'session-not-found'
+  | 'session-not-open'
+  | 'session-not-lobby';
+
+/** Outcome shared by focused commands that recheck the current live tree before mutation. */
+export type IntentCommandResult =
+  | { readonly status: 'applied' }
+  | { readonly status: 'idempotent' }
+  | {
+      readonly status: 'conflict' | 'stale' | 'rejected';
+      readonly reason: IntentCommandFailureReason;
+    };
+
+/** Form-owned team fields applied only when the edit baseline is still current. */
+export interface TeamEditCommand {
+  readonly teamId: string;
+  readonly expectedUpdatedAt: string;
+  readonly title?: string;
+  readonly description?: string;
+  readonly isActive?: boolean;
+  readonly hosts?: readonly UserReference[];
+  readonly configuredMembers?: readonly UserReference[];
+  readonly settings?: TeamSettings;
+  readonly currentUser: UserReference;
+  readonly updatedAt: string;
+}
+
+/** One independently editable team activity flag. */
+export interface TeamActiveCommand {
+  readonly teamId: string;
+  readonly expectedIsActive: boolean;
+  readonly isActive: boolean;
+  readonly currentUser: UserReference;
+  readonly updatedAt: string;
+}
+
+/** Creates one detached story without replacing the authoritative story sequence. */
+export interface StoryCreateCommand {
+  readonly story: PointingStory;
+  readonly currentUser: UserReference;
+  readonly updatedAt: string;
+}
+
+/** Atomically appends a submitted set of detached stories. */
+export interface StoryImportCommand {
+  readonly stories: readonly PointingStory[];
+  readonly currentUser: UserReference;
+  readonly updatedAt: string;
+}
+
+/** Patches only editable content on the current story node. */
+export interface StoryEditCommand {
+  readonly storyId: string;
+  readonly expectedUpdatedAt: string;
+  readonly title: string;
+  readonly description: string;
+  readonly link?: string;
+  readonly currentUser: UserReference;
+  readonly updatedAt: string;
+}
+
+/** Applies one guarded story lifecycle transition. */
+export interface StoryTransitionCommand {
+  readonly storyId: string;
+  readonly status: StoryStatus;
+  readonly allowedFrom: readonly StoryStatus[];
+  readonly currentUser: UserReference;
+  readonly updatedAt: string;
+}
+
+/** Deletes one current story when no unfinished round owns it. */
+export interface StoryDeleteCommand {
+  readonly storyId: string;
+  readonly currentUser: UserReference;
+  readonly updatedAt: string;
+}
+
 /** Owns one loaded Fluid document and its subscription lifecycle. */
 export interface TeamDocumentHandle {
   /** The stable team identifier. */
@@ -137,33 +228,20 @@ export interface TeamDocumentHandle {
   getSnapshot(): PlanningPokerDocumentRoot;
   /** @returns The current collaboration connection state. */
   getConnectionState(): 'Connected' | 'Disconnected';
-  /**
-   * Applies one team mutation through the store's Fluid transaction boundary.
-   *
-   * @param team - The complete next team state with stable identity and audit fields.
-   * @returns `void` after the local transaction is applied.
-   */
-  updateTeam(team: PlanningPokerTeam): void;
-  /**
-   * Replaces the ordered story collection through the store's Fluid transaction boundary.
-   *
-   * @param stories - Complete next story collection.
-   * @param updatedAt - ISO timestamp for document Last Activity.
-   * @returns `void` after the local transaction is applied.
-   */
-  updateStories(stories: readonly PointingStory[], updatedAt: string): void;
-  /**
-   * Replaces session state and its single-open-session pointer in one Fluid transaction.
-   *
-   * @param sessions - Complete ordered session collection.
-   * @param openSessionId - The single Lobby or Active session, when present.
-   * @param updatedAt - ISO timestamp for document Last Activity.
-   */
-  updateSessions(
-    sessions: readonly VotingSession[],
-    openSessionId: string | undefined,
-    updatedAt: string
-  ): void;
+  /** Applies a complete form edit only when its authoritative team baseline is unchanged. */
+  editTeam(command: TeamEditCommand): IntentCommandResult;
+  /** Changes only team activity while preserving concurrent roster and settings work. */
+  setTeamActive(command: TeamActiveCommand): IntentCommandResult;
+  /** Appends one new story through the SharedTree sequence API. */
+  createStory(command: StoryCreateCommand): IntentCommandResult;
+  /** Atomically appends detached import rows without replacing existing stories. */
+  importStories(command: StoryImportCommand): IntentCommandResult;
+  /** Patches editable content on one current story node. */
+  editStory(command: StoryEditCommand): IntentCommandResult;
+  /** Applies one lifecycle transition to a current story node. */
+  transitionStory(command: StoryTransitionCommand): IntentCommandResult;
+  /** Removes one current story that is not owned by an unfinished round. */
+  deleteStory(command: StoryDeleteCommand): IntentCommandResult;
   /**
    * Creates a Lobby only when the transaction observes no existing open session.
    *
@@ -172,6 +250,12 @@ export interface TeamDocumentHandle {
    * @returns The candidate ID, or the existing open Lobby/Active session ID.
    */
   prepareVotingSession(session: VotingSession, updatedAt: string): string;
+  /** Moves the matching authoritative Lobby to Active without replacing its participants. */
+  startVotingSession(
+    sessionId: string,
+    currentUser: UserReference,
+    updatedAt: string
+  ): IntentCommandResult;
   /**
    * Joins or reconnects one participant inside the Fluid transaction boundary.
    *
@@ -364,6 +448,50 @@ export function isHostedBy(team: PlanningPokerTeam, currentUser: UserReference):
 }
 
 /**
+ * Compares ordered user-reference values when deriving a focused team patch.
+ *
+ * @param left - Baseline roster.
+ * @param right - Submitted roster.
+ * @returns Whether every ordered identity value matches.
+ */
+function areUserReferencesEqual(
+  left: readonly UserReference[],
+  right: readonly UserReference[]
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((user, index) => {
+      const other = right[index];
+      return (
+        other !== undefined &&
+        user.objectId === other.objectId &&
+        user.displayName === other.displayName &&
+        user.loginName === other.loginName &&
+        user.sharePointUserId === other.sharePointUserId
+      );
+    })
+  );
+}
+
+/**
+ * Compares team settings when deriving a focused team patch.
+ *
+ * @param left - Baseline settings.
+ * @param right - Submitted settings.
+ * @returns Whether scalar and ordered scale values match.
+ */
+function areTeamSettingsEqual(left: TeamSettings, right: TeamSettings): boolean {
+  return (
+    left.scaleKind === right.scaleKind &&
+    left.timerEnabled === right.timerEnabled &&
+    left.timerDurationSeconds === right.timerDurationSeconds &&
+    left.votingMode === right.votingMode &&
+    left.scaleValues.length === right.scaleValues.length &&
+    left.scaleValues.every((value, index) => value === right.scaleValues[index])
+  );
+}
+
+/**
  * Projects the authoritative Fluid document into lightweight SharePoint discovery metadata.
  *
  * @param document - The validated plain document snapshot.
@@ -491,18 +619,20 @@ export class TeamRepository {
    *
    * @param handle - The loaded document handle that owns the Fluid transaction boundary.
    * @param currentUser - The delegated user requesting the mutation.
+   * @param expectedTeam - Team snapshot used to create the edit draft.
    * @param team - The complete next team state.
    * @returns A promise that resolves after Fluid, rename, and metadata operations are acknowledged.
    * @throws Throws `TeamRepositoryError` when Fluid host state rejects the mutation or data is invalid.
    */
-  public async updateTeamDocument(
+  public async editTeamDocument(
     handle: TeamDocumentHandle,
     currentUser: UserReference,
+    expectedTeam: PlanningPokerTeam,
     team: PlanningPokerTeam
   ): Promise<void> {
     this.requireStorage();
     const current = handle.getSnapshot();
-    if (current.team.id !== team.id || handle.teamId !== team.id) {
+    if (current.team.id !== team.id || expectedTeam.id !== team.id || handle.teamId !== team.id) {
       throw new TeamRepositoryError('invalid-team', 'The loaded team identity does not match.');
     }
     if (!isHostedBy(current.team, currentUser)) {
@@ -513,12 +643,73 @@ export class TeamRepository {
     }
     await this.validateAvailableTitle(team.title, team.id);
     this.validateTeam(team);
-    const isRenamed = current.team.title !== team.title.trim();
-    handle.updateTeam(team);
+    const isRenamed = expectedTeam.title !== team.title.trim();
+    const result = handle.editTeam({
+      teamId: team.id,
+      expectedUpdatedAt: expectedTeam.updatedAt,
+      ...(expectedTeam.title === team.title.trim() ? {} : { title: team.title.trim() }),
+      ...(expectedTeam.description === team.description ? {} : { description: team.description }),
+      ...(expectedTeam.isActive === team.isActive ? {} : { isActive: team.isActive }),
+      ...(areUserReferencesEqual(expectedTeam.hosts, team.hosts) ? {} : { hosts: team.hosts }),
+      ...(areUserReferencesEqual(expectedTeam.configuredMembers, team.configuredMembers)
+        ? {}
+        : { configuredMembers: team.configuredMembers }),
+      ...(areTeamSettingsEqual(expectedTeam.settings, team.settings)
+        ? {}
+        : { settings: team.settings }),
+      currentUser,
+      updatedAt: team.updatedAt
+    });
+    if (result.status !== 'applied' && result.status !== 'idempotent') {
+      throw new TeamRepositoryError(
+        result.reason === 'host-required' ? 'host-mismatch' : 'stale-command',
+        result.reason === 'host-required'
+          ? 'Team host details changed. Reload the team or ask another host to repair access.'
+          : 'This team changed while you were editing it. Reload the latest values and try again.'
+      );
+    }
     await handle.waitForSaved();
     if (isRenamed) {
       await this.store.rename(team.id, team.title.trim());
     }
+    await this.updateTeamMetadata(handle);
+  }
+
+  /**
+   * Changes only a team's activity flag against the current live team node.
+   *
+   * @param handle - Loaded document handle that owns the transaction boundary.
+   * @param currentUser - Delegated host requesting the change.
+   * @param expectedIsActive - Activity value observed by the initiating screen.
+   * @param isActive - Requested next activity value.
+   * @param updatedAt - ISO audit timestamp.
+   * @returns A promise resolving after Fluid and metadata acknowledgements.
+   * @throws Throws `TeamRepositoryError` when current host or activity state rejects the command.
+   */
+  public async setTeamActive(
+    handle: TeamDocumentHandle,
+    currentUser: UserReference,
+    expectedIsActive: boolean,
+    isActive: boolean,
+    updatedAt: string
+  ): Promise<void> {
+    this.requireStorage();
+    const result = handle.setTeamActive({
+      teamId: handle.teamId,
+      expectedIsActive,
+      isActive,
+      currentUser,
+      updatedAt
+    });
+    if (result.status !== 'applied' && result.status !== 'idempotent') {
+      throw new TeamRepositoryError(
+        result.reason === 'host-required' ? 'host-mismatch' : 'stale-command',
+        result.reason === 'host-required'
+          ? 'Only a current team host can change team activity.'
+          : 'Team activity changed in another window. Reload and try again.'
+      );
+    }
+    await handle.waitForSaved();
     await this.updateTeamMetadata(handle);
   }
 
