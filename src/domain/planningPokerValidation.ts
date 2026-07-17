@@ -56,7 +56,10 @@ export function getSchemaCompatibility(value: unknown): SchemaCompatibility {
   if (value === CURRENT_SCHEMA_VERSION) {
     return 'supported';
   }
-  if (compareSchemaVersions(value, MIN_SUPPORTED_SCHEMA_VERSION) < 0) {
+  if (
+    compareSchemaVersions(value, MIN_SUPPORTED_SCHEMA_VERSION) >= 0 &&
+    compareSchemaVersions(value, CURRENT_SCHEMA_VERSION) < 0
+  ) {
     return 'migratable';
   }
   if (compareSchemaVersions(value, MAX_SUPPORTED_SCHEMA_VERSION) > 0) {
@@ -166,15 +169,46 @@ export function validateDocumentInvariants(document: PlanningPokerDocumentRoot):
   const openSessions = document.sessions.filter((session) => isOpenSession(session.status));
   if (
     openSessions.length > 1 ||
-    (document.openSessionId !== undefined &&
-      openSessions.every((session) => session.id !== document.openSessionId))
+    (openSessions.length === 1 && document.openSessionId !== openSessions[0].id) ||
+    (openSessions.length === 0 && document.openSessionId !== undefined)
   ) {
     errors.push('A team may have at most one valid open session.');
   }
   for (const session of document.sessions) {
+    const participantIds = session.participants.map((participant) => participant.id);
+    const namedObjectIds = session.participants
+      .filter((participant) => participant.kind === 'Named')
+      .map((participant) => participant.user.objectId);
+    const anonymousAliases = session.participants
+      .filter((participant) => participant.kind === 'Anonymous')
+      .map((participant) => participant.alias);
+    if (new Set(participantIds).size !== participantIds.length) {
+      errors.push(`Session ${session.id} contains duplicate participant IDs.`);
+    }
+    if (new Set(namedObjectIds).size !== namedObjectIds.length) {
+      errors.push(`Session ${session.id} contains duplicate Named participants.`);
+    }
+    if (new Set(anonymousAliases).size !== anonymousAliases.length) {
+      errors.push(`Session ${session.id} contains duplicate Anonymous aliases.`);
+    }
     const unfinishedRounds = session.rounds.filter((round) => isUnfinishedRound(round.status));
-    if (unfinishedRounds.length > 1) {
-      errors.push(`Session ${session.id} has more than one unfinished round.`);
+    if (
+      unfinishedRounds.length > 1 ||
+      (unfinishedRounds.length === 1 && session.activeRoundId !== unfinishedRounds[0].id) ||
+      (unfinishedRounds.length === 0 && session.activeRoundId !== undefined)
+    ) {
+      errors.push(`Session ${session.id} has an invalid unfinished-round pointer.`);
+    }
+    const expectedFinalizedRoundIds = session.rounds
+      .filter((round) => round.status === 'Finalized')
+      .map((round) => round.id);
+    if (
+      expectedFinalizedRoundIds.length !== session.finalizedRoundIds.length ||
+      expectedFinalizedRoundIds.some(
+        (roundId, index) => session.finalizedRoundIds[index] !== roundId
+      )
+    ) {
+      errors.push(`Session ${session.id} has an invalid finalized-round index.`);
     }
     for (const round of session.rounds) {
       if (round.status === 'Finalized' && round.assignedValue === undefined) {
@@ -188,6 +222,18 @@ export function validateDocumentInvariants(document: PlanningPokerDocumentRoot):
       ) {
         errors.push(`Round ${round.id} contains a vote from a non-participant.`);
       }
+      const voterIds = round.votes.map((vote) => vote.participantId);
+      if (new Set(voterIds).size !== voterIds.length) {
+        errors.push(`Round ${round.id} contains duplicate participant vote slots.`);
+      }
+    }
+  }
+  for (const story of document.stories) {
+    const operationIds = story.estimateHistory
+      .map((entry) => entry.operationId)
+      .filter((operationId): operationId is string => operationId !== undefined);
+    if (new Set(operationIds).size !== operationIds.length) {
+      errors.push(`Story ${story.id} contains replayed estimate-history operations.`);
     }
   }
   return errors;

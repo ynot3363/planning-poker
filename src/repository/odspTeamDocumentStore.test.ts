@@ -326,7 +326,7 @@ describe('OdspTeamDocumentStore', () => {
         PlanningPokerHostsId: [17],
         PlanningPokerParticipantsId: [18],
         PlanningPokerIsActive: true,
-        PlanningPokerSchemaVersion: '1.0.0',
+        PlanningPokerSchemaVersion: '1.1.0',
         PlanningPokerLastActivity: fixtureDocument.updatedAt
       })
     );
@@ -470,6 +470,7 @@ describe('OdspTeamDocumentStore', () => {
     expect(handle.getSnapshot().sessions[0].rounds[0].status).toBe('Cancelled');
     expect(
       handle.castVotingVote(lobby.id, 'round-2', {
+        operationId: 'vote-1',
         participantId: 'participant-1',
         value: '3',
         castAt: fixtureDocument.updatedAt
@@ -477,6 +478,24 @@ describe('OdspTeamDocumentStore', () => {
     ).toBe('cast');
     expect(
       handle.castVotingVote(lobby.id, 'round-2', {
+        operationId: 'vote-1',
+        participantId: 'participant-1',
+        value: '3',
+        castAt: fixtureDocument.updatedAt
+      })
+    ).toBe('already-cast');
+    expect(
+      handle.castVotingVote(lobby.id, 'round-2', {
+        operationId: 'vote-1',
+        participantId: 'participant-1',
+        value: '5',
+        castAt: fixtureDocument.updatedAt
+      })
+    ).toBe('reconciled-conflict');
+    expect(
+      handle.castVotingVote(lobby.id, 'round-2', {
+        operationId: 'vote-2',
+        supersedesOperationId: 'vote-1',
         participantId: 'participant-1',
         value: '5',
         castAt: fixtureDocument.updatedAt
@@ -486,7 +505,17 @@ describe('OdspTeamDocumentStore', () => {
       expect.objectContaining({ participantId: 'participant-1', value: '5' })
     ]);
     expect(
+      handle.castVotingVote(lobby.id, 'round-2', {
+        operationId: 'vote-stale-parent',
+        supersedesOperationId: 'vote-1',
+        participantId: 'participant-1',
+        value: '8',
+        castAt: fixtureDocument.updatedAt
+      })
+    ).toBe('reconciled-conflict');
+    expect(
       handle.castVotingVote(lobby.id, 'round-1', {
+        operationId: 'vote-invalid-round',
         participantId: 'participant-1',
         value: '8',
         castAt: fixtureDocument.updatedAt
@@ -575,6 +604,7 @@ describe('OdspTeamDocumentStore', () => {
     ).toBe('invalid-command');
     expect(
       handle.castVotingVote(lobby.id, 'round-2', {
+        operationId: 'vote-participant-2',
         participantId: 'participant-2',
         value: '3',
         castAt: '2026-07-10T00:02:00.000Z'
@@ -589,6 +619,7 @@ describe('OdspTeamDocumentStore', () => {
     });
     expect(
       handle.castVotingVote(lobby.id, 'round-2', {
+        operationId: 'vote-after-reveal',
         participantId: 'participant-1',
         value: '8',
         castAt: '2026-07-10T00:02:00.500Z'
@@ -603,11 +634,19 @@ describe('OdspTeamDocumentStore', () => {
         'round-2',
         '100',
         fixtureUser,
-        '2026-07-10T00:02:02.000Z'
+        '2026-07-10T00:02:02.000Z',
+        'finalize-invalid'
       )
     ).toBe('invalid-estimate');
     expect(
-      handle.finalizeVotingRound(lobby.id, 'round-2', '5', fixtureUser, '2026-07-10T00:02:03.000Z')
+      handle.finalizeVotingRound(
+        lobby.id,
+        'round-2',
+        '5',
+        fixtureUser,
+        '2026-07-10T00:02:03.000Z',
+        'finalize-1'
+      )
     ).toBe('finalized');
     expect(handle.getSnapshot().stories[1]).toMatchObject({
       status: 'Pointed',
@@ -615,7 +654,14 @@ describe('OdspTeamDocumentStore', () => {
       estimateHistory: [expect.objectContaining({ sessionId: lobby.id, roundId: 'round-2' })]
     });
     expect(
-      handle.finalizeVotingRound(lobby.id, 'round-2', '5', fixtureUser, '2026-07-10T00:02:04.000Z')
+      handle.finalizeVotingRound(
+        lobby.id,
+        'round-2',
+        '5',
+        fixtureUser,
+        '2026-07-10T00:02:04.000Z',
+        'finalize-1'
+      )
     ).toBe('already-finalized');
     const finalizedSession = handle.getSnapshot().sessions[0];
     setTestSessions(
@@ -944,6 +990,7 @@ describe('OdspTeamDocumentStore', () => {
     );
     legacyView.initialize({
       ...fixtureDocument,
+      schemaVersion: '1.0.0',
       stories: [story, secondStory],
       sessions: [session],
       openSessionId: session.id
@@ -974,6 +1021,7 @@ describe('OdspTeamDocumentStore', () => {
     );
 
     const handle = await store.load('drive-item-id');
+    expect(handle.getSnapshot().schemaVersion).toBe('1.1.0');
     const connectedSecondAttendee = { getConnectionStatus: () => 'Connected' };
     mockPresenceAttendees.add(connectedSecondAttendee);
     mockPresenceBindings.set(connectedSecondAttendee, {
@@ -1028,9 +1076,16 @@ describe('OdspTeamDocumentStore', () => {
     expect(handle.revealVotingRound(session.id, 'round-1', fixtureUser, timestamp)).toBe(
       'revealed'
     );
-    expect(handle.finalizeVotingRound(session.id, 'round-1', '3', fixtureUser, timestamp)).toBe(
-      'finalized'
-    );
+    expect(
+      handle.finalizeVotingRound(
+        session.id,
+        'round-1',
+        '3',
+        fixtureUser,
+        timestamp,
+        'finalize-round-1'
+      )
+    ).toBe('finalized');
     expect(
       handle.selectVotingStory(
         session.id,
@@ -1043,6 +1098,7 @@ describe('OdspTeamDocumentStore', () => {
     ).toBe('selected');
     expect(
       handle.castVotingVote(session.id, 'round-2', {
+        operationId: 'round-2-vote-1',
         participantId: 'participant-1',
         value: '5',
         castAt: '2026-07-10T00:04:00.000Z'
@@ -1051,9 +1107,32 @@ describe('OdspTeamDocumentStore', () => {
     expect(handle.getSnapshot().sessions[0].rounds[1]).toMatchObject({ status: 'Voting' });
     expect(
       handle.castVotingVote(session.id, 'round-2', {
+        operationId: 'round-2-vote-2',
         participantId: 'participant-2',
         value: '3',
         castAt: '2026-07-10T00:04:30.000Z'
+      })
+    ).toBe('cast');
+    expect(handle.getSnapshot().sessions[0].rounds[1]).toMatchObject({
+      status: 'Revealed',
+      revealReason: 'Automatic'
+    });
+    expect(handle.undoVotingRoundReveal(session.id, 'round-2', fixtureUser, timestamp)).toBe(
+      'reopened'
+    );
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    expect(handle.getSnapshot().sessions[0].rounds[1]).toMatchObject({
+      status: 'Voting',
+      automaticRevealSuppressionKey: expect.any(String),
+      timer: expect.objectContaining({ status: 'Stopped' })
+    });
+    expect(
+      handle.castVotingVote(session.id, 'round-2', {
+        operationId: 'round-2-vote-3',
+        supersedesOperationId: 'round-2-vote-1',
+        participantId: 'participant-1',
+        value: '8',
+        castAt: '2026-07-10T00:04:45.000Z'
       })
     ).toBe('cast');
     expect(handle.getSnapshot().sessions[0].rounds[1]).toMatchObject({
@@ -1066,7 +1145,8 @@ describe('OdspTeamDocumentStore', () => {
         'round-2',
         '5',
         fixtureUser,
-        '2026-07-10T00:05:00.000Z'
+        '2026-07-10T00:05:00.000Z',
+        'finalize-round-2'
       )
     ).toBe('finalized');
     expect(
@@ -1075,9 +1155,22 @@ describe('OdspTeamDocumentStore', () => {
         'round-2',
         '8',
         fixtureUser,
-        '2026-07-10T00:06:00.000Z'
+        '2026-07-10T00:06:00.000Z',
+        'correct-round-2',
+        'finalize-round-2'
       )
     ).toBe('finalized');
+    expect(
+      handle.finalizeVotingRound(
+        session.id,
+        'round-2',
+        '13',
+        fixtureUser,
+        '2026-07-10T00:06:30.000Z',
+        'stale-correction-round-2',
+        'finalize-round-2'
+      )
+    ).toBe('reconciled-conflict');
     expect(handle.getSnapshot().stories).toEqual([
       expect.objectContaining({ id: story.id, currentEstimate: '3' }),
       expect.objectContaining({

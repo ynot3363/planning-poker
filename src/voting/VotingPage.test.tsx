@@ -995,6 +995,8 @@ describe('VotingPage', () => {
 
     expect(service.undoReveal).toHaveBeenCalledWith(expect.anything(), 'results-round');
     expect(container.textContent).not.toContain('Named participant results');
+    expect(container.textContent).toContain('Resume');
+    expect(container.textContent).toContain('Reset');
     const revealAgain = Array.from(container.querySelectorAll('button')).find(
       (button) => button.textContent === 'Reveal Results'
     );

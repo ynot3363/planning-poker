@@ -20,22 +20,37 @@ for the reveal/finalization workflow.
 
 ## Vote Contract
 
-`castVote(roundId, scaleValue)` is an upsert keyed by the session participant
-ID. The mutation boundary accepts a vote only when:
+`castVote(roundId, scaleValue)` submits an intent keyed by the session
+participant ID. Each intent carries a stable operation ID, and a changed vote
+names the prior canonical operation it supersedes. The mutation boundary
+accepts a vote only when:
 
 - the session is the open Active session;
 - the participant has joined that session;
 - the supplied round is the current `Voting` round; and
 - the value exactly matches one entry in the session's ordered scale snapshot.
 
-Changing a vote replaces the existing record and leaves the voted participant
-count unchanged. Each accepted mutation waits for Fluid save acknowledgement.
-Per-vote SharePoint metadata updates are deliberately avoided.
+Changing a vote replaces the canonical record after reconciliation and leaves
+the voted participant count unchanged. Retrying the same operation ID is
+idempotent. If two clients submit sibling values for one participant, the
+smallest operation ID by code-unit order wins deterministically; the repository
+returns a safe conflict result when the submitted intent is not canonical.
+Each accepted mutation waits for Fluid save acknowledgement. Per-vote
+SharePoint metadata updates are deliberately avoided.
+
+Simultaneous round selection is repaired by stable round ID: the smallest ID is
+the active round and other unfinished siblings become `Cancelled`. This rule is
+independent of timestamps and network delivery order.
 
 The final connected participant's accepted vote reveals the round in the same
 transaction. Later vote attempts are rejected because a `Revealed` round is
 frozen. Hosts may reveal early after at least one vote; estimate assignment is a
 separate host action described in `docs/voting-results.md`.
+
+When final required votes were accepted independently before either client saw
+the other, reconciliation performs the same Automatic reveal after their vote
+slots merge. The reveal audit projection selects its vote by stable operation
+ID, so it does not depend on delivery order or client clocks.
 
 ## Pre-Reveal Privacy and Links
 

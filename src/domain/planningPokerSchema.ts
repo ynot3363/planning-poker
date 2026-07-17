@@ -45,6 +45,8 @@ export const TeamSchema = factory.object('PlanningPokerTeam', {
 
 /** SharedTree schema for one finalized estimate history entry. */
 export const EstimateHistoryEntrySchema = factory.object('EstimateHistoryEntry', {
+  operationId: factory.optional(factory.string),
+  supersedesOperationId: factory.optional(factory.string),
   sessionId: factory.string,
   roundId: factory.string,
   value: factory.string,
@@ -101,6 +103,8 @@ export const StorySnapshotSchema = factory.object('StorySnapshot', {
 
 /** SharedTree schema for one participant vote. */
 export const VoteSchema = factory.object('VoteRecord', {
+  operationId: factory.optional(factory.string),
+  supersedesOperationId: factory.optional(factory.string),
   participantId: factory.string,
   value: factory.string,
   castAt: factory.string
@@ -129,9 +133,11 @@ export const RoundSchema = factory.object('StoryVotingRound', {
   revealReason: factory.optional(factory.string),
   revealedVotedCount: factory.optional(factory.number),
   revealedMissingCount: factory.optional(factory.number),
+  automaticRevealSuppressionKey: factory.optional(factory.string),
   assignedValue: factory.optional(factory.string),
   finalizedAt: factory.optional(factory.string),
-  finalizedBy: factory.optional(UserReferenceSchema)
+  finalizedBy: factory.optional(UserReferenceSchema),
+  finalizationOperationId: factory.optional(factory.string)
 });
 
 /** SharedTree schema for a team voting session. */

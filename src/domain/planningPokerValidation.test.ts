@@ -12,8 +12,9 @@ import {
 
 describe('Planning Poker domain validation', () => {
   it('accepts the current schema and classifies unsupported versions', () => {
-    expect(getSchemaCompatibility('1.0.0')).toBe('supported');
-    expect(getSchemaCompatibility('0.9.0')).toBe('migratable');
+    expect(getSchemaCompatibility('1.1.0')).toBe('supported');
+    expect(getSchemaCompatibility('1.0.0')).toBe('migratable');
+    expect(getSchemaCompatibility('0.9.0')).toBe('invalid');
     expect(getSchemaCompatibility('2.0.0')).toBe('newer-unsupported');
     expect(getSchemaCompatibility('not-a-version')).toBe('invalid');
   });

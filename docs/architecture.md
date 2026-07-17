@@ -266,6 +266,44 @@ the older status, estimate, or history. A repeated create with the same stable
 ID and creation fields is idempotent, while a different entity using that ID is
 a conflict.
 
+### Deterministic Collaboration Reconciliation
+
+SharedTree guarantees operation convergence, but it does not by itself enforce
+application uniqueness such as one open session, one unfinished round, or one
+vote slot. Planning Poker therefore reconciles the converged document after
+tree changes and once during load. Reconciliation is synchronous, idempotent,
+and based only on persisted stable IDs and causal links; wall-clock timestamps,
+arrival order, and client locale never select a winner.
+
+The deterministic rules are:
+
+- the smallest opaque entity ID by Unicode code-unit order wins simultaneous
+  open-session or unfinished-round creation;
+- a Named participant is keyed by Entra object ID, and the smallest participant
+  ID wins duplicate joins;
+- Anonymous aliases are reassigned in participant-ID order, preserving the
+  non-identifying `Participant N` contract after concurrent joins;
+- votes and estimate assignments carry a stable `operationId`; a later intent
+  names its observed parent in `supersedesOperationId`, and the smallest
+  operation ID wins only when concurrent causal tips are siblings; and
+- `openSessionId`, `activeRoundId`, and `finalizedRoundIds` are repaired
+  projections of canonical entity state rather than independent sources of
+  truth.
+
+A retried command must reuse its operation ID. Replayed vote and finalization
+commands are idempotent and do not duplicate a vote slot, estimate-history
+entry, or finalized-round index. A distinct correction receives a new operation
+ID and supersedes the prior canonical assignment so the audit history remains
+available. The repository may return an idempotent or reconciled-conflict
+result; services show recovery guidance and refresh from the canonical read
+model rather than treating a locally accepted write as globally authoritative.
+
+This is an application-level last-writer rule based on causal intent, not time:
+an observed child supersedes its parent, while simultaneous siblings use the
+stable-ID tie-break. Multi-client tests must delay and reorder operations, run
+reconciliation from independent containers, and verify the same state after a
+summary reload.
+
 ### Planning Poker Round Mutations
 
 Active-story selection and vote upserts must use document-store transaction
@@ -273,7 +311,8 @@ commands rather than replacing a session assembled from a stale UI snapshot.
 The transaction rechecks the open Active session, current round, participant or
 host authority, story lifecycle, and immutable session scale before mutation.
 Round selection captures story content and updates `activeRoundId` atomically;
-votes are keyed by participant ID so changing a selection replaces one record.
+votes are keyed by participant ID and use stable operation identities so a
+changed selection causally supersedes the prior canonical record.
 
 React must use privacy-shaped selectors before reveal: the current participant
 may see their own value, Named mode may show voted/not-voted state, and

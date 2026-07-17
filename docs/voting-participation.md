@@ -23,6 +23,10 @@ Only people who join the session are eligible voters; configured members who do
 not join are not counted as remaining votes. A host may join as a voter without
 changing their separate host capabilities.
 
+Concurrent Named rejoins are keyed by Entra object ID. If independent clients
+insert duplicate roster entries, reconciliation keeps the smallest stable
+participant ID, remaps dependent votes to it, and removes the duplicates.
+
 ## Anonymous sessions
 
 Joining creates a durable opaque participant ID and assigns the next available
@@ -39,6 +43,11 @@ participant ID, and mode. When that attendee disconnects, other clients remove
 the Anonymous roster entry and its active unrevealed vote. A later reconnect
 recreates participation and may receive a new alias. The reconnect record is
 not placed in the URL or Fluid state.
+
+Alias allocation is eventually deterministic under simultaneous joins.
+Reconciliation orders Anonymous participant IDs by Unicode code unit and
+assigns `Participant 1`, `Participant 2`, and so on, so every client reaches the
+same unique aliases without persisting authenticated identity.
 
 Anonymous mode is an application data and presentation contract. It does not
 provide network-level anonymity from Microsoft 365, SharePoint, tenant

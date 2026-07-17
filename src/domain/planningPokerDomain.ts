@@ -1,9 +1,9 @@
 /** The schema version written by this client. */
-export const CURRENT_SCHEMA_VERSION = '1.0.0';
+export const CURRENT_SCHEMA_VERSION = '1.1.0';
 /** The oldest schema version this client can migrate. */
 export const MIN_SUPPORTED_SCHEMA_VERSION = '1.0.0';
 /** The newest schema version this client can read. */
-export const MAX_SUPPORTED_SCHEMA_VERSION = '1.0.0';
+export const MAX_SUPPORTED_SCHEMA_VERSION = '1.1.0';
 
 /** A semantic version used by persisted Planning Poker documents. */
 export type SchemaVersion = `${number}.${number}.${number}`;
@@ -87,6 +87,10 @@ export interface PlanningPokerTeam extends AuditFields {
 
 /** Records a finalized estimate for a story. */
 export interface EstimateHistoryEntry {
+  /** Stable identity reused when the same finalization or correction command is retried. */
+  readonly operationId?: string;
+  /** Prior canonical history operation intentionally superseded by this correction. */
+  readonly supersedesOperationId?: string;
   /** The session in which the estimate was finalized. */
   readonly sessionId: string;
   /** The round in which the estimate was finalized. */
@@ -170,6 +174,10 @@ export interface StorySnapshot {
 
 /** Records a participant's current vote in a round. */
 export interface VoteRecord {
+  /** Stable identity reused when the same vote intent is retried. */
+  readonly operationId?: string;
+  /** Prior canonical vote operation intentionally superseded by this selection. */
+  readonly supersedesOperationId?: string;
   /** The session-scoped participant identifier. */
   readonly participantId: string;
   /** The selected estimate value. */
@@ -218,12 +226,16 @@ export interface StoryVotingRound {
   readonly revealedVotedCount?: number;
   /** Number of connected eligible voters missing a vote when results were revealed. */
   readonly revealedMissingCount?: number;
+  /** Canonical vote-operation fingerprint that must change before auto-reveal after Undo. */
+  readonly automaticRevealSuppressionKey?: string;
   /** The estimate assigned when the round was finalized. */
   readonly assignedValue?: string;
   /** The ISO timestamp at which the round was finalized. */
   readonly finalizedAt?: string;
   /** The user who finalized the round. */
   readonly finalizedBy?: UserReference;
+  /** Canonical finalization or correction operation selected after convergence. */
+  readonly finalizationOperationId?: string;
 }
 
 /** Represents a collaborative voting session for a team. */

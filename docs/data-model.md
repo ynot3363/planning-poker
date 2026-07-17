@@ -14,12 +14,12 @@ PlanningPokerDocumentRoot
     hosts[] / configuredMembers[]
     settings (scale, timer, voting mode)
   stories[]
-    estimateHistory[] -> sessionId + roundId
+    estimateHistory[] -> operationId + supersedesOperationId? + sessionId + roundId
   sessions[]
     participants[]
     rounds[]
       storySnapshot
-      votes[] -> participantId
+      votes[] -> operationId + supersedesOperationId? + participantId
       timer
 ```
 
@@ -35,7 +35,9 @@ team settings at creation time, so later team edits cannot rewrite history.
 - Story state is `Ready`, `Pointed`, or `Archived`. Finalization moves a story
   to `Pointed` and appends history; restore and re-pointing preserve history.
 - Votes identify only the session participant and are valid only against the
-  session's scale snapshot.
+  session's scale snapshot. Their operation IDs make retries idempotent and
+  their optional supersession links distinguish a changed selection from a
+  simultaneous sibling selection.
 - Named participants contain the minimum `UserReference`. Anonymous participants
   contain only a generated alias and technical participant data. No persisted
   field maps an anonymous alias to an authenticated identity.
@@ -48,16 +50,29 @@ team settings at creation time, so later team edits cannot rewrite history.
 
 ## Schema versions
 
-The current document schema is `1.0.0`. Additive, explicitly tested migrations
+The current document schema is `1.1.0`. Additive, explicitly tested migrations
 may upgrade older supported roots. A newer or invalid root is a recoverable
 compatibility error: it must not be reset, overwritten, or silently migrated.
 Schema validation checks compatibility and corruption; it is not an
 authorization or tamper-detection mechanism.
 
 US-011 makes session user-audit references optional so Anonymous sessions can
-omit authenticated identity values. Existing `1.0.0` documents remain readable;
-the Fluid view applies the compatible stored-schema upgrade before permitting
-writes through the widened optional-field contract.
+omit authenticated identity values. US-020 adds optional vote and estimate
+history `operationId` and `supersedesOperationId` fields plus a round-level
+`finalizationOperationId` and optional automatic-reveal suppression key.
+Existing `1.0.0` documents remain readable: load first applies the compatible
+stored-schema upgrade, assigns deterministic legacy operation identities during
+reconciliation, and writes `1.1.0` before new commands use the additive fields.
+Persisted configurations advertising `1.0.0` are accepted and refreshed to the
+current version; versions below the supported migration floor remain
+incompatible.
+
+The root and session pointer/index fields are derived projections. After
+convergence, reconciliation selects one open session and one unfinished round,
+deduplicates Named identities and participant vote slots, assigns unique
+Anonymous aliases, removes replayed finalization operations, and rebuilds the
+finalized-round index. Winner selection uses stable ID code-unit ordering and
+causal supersession links, never timestamps or delivery order.
 
 ## SharePoint discovery metadata
 

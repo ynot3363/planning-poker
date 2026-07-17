@@ -135,7 +135,7 @@ describe('TeamRepository', () => {
       hosts: [fixtureUser],
       participants: [],
       isActive: true,
-      schemaVersion: '1.0.0',
+      schemaVersion: '1.1.0',
       activeSessionId: undefined,
       lastActivity: fixtureDocument.updatedAt
     });

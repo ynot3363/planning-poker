@@ -85,10 +85,13 @@ export type VotingStorySelectionResult =
 /** Expected outcomes from the transaction that upserts a participant vote. */
 export type VotingVoteResult =
   | 'cast'
+  | 'already-cast'
+  | 'reconciled-conflict'
   | 'invalid-session'
   | 'participant-required'
   | 'invalid-round'
-  | 'invalid-vote';
+  | 'invalid-vote'
+  | 'invalid-command';
 
 /** Host timer commands accepted by the active-round transaction. */
 export type VotingTimerCommand = 'start' | 'stop' | 'reset';
@@ -121,14 +124,24 @@ export type VotingUndoRevealResult =
 export type VotingFinalizeResult =
   | 'finalized'
   | 'already-finalized'
+  | 'reconciled-conflict'
   | 'invalid-session'
   | 'host-required'
   | 'invalid-round'
   | 'invalid-estimate'
-  | 'invalid-story';
+  | 'invalid-story'
+  | 'invalid-command';
 
 /** Expected outcomes from ending an open voting session. */
 export type VotingEndResult = 'ended' | 'already-ended' | 'invalid-session' | 'host-required';
+
+/** Stable vote intent persisted for retry and deterministic concurrent-value resolution. */
+export interface VotingVoteCommand extends VoteRecord {
+  /** Opaque ID reused when this exact vote intent is retried. */
+  readonly operationId: string;
+  /** Prior authoritative vote operation observed by the caller. */
+  readonly supersedesOperationId?: string;
+}
 
 /** Safe reasons returned when an intent command cannot change current shared state. */
 export type IntentCommandFailureReason =
@@ -281,7 +294,7 @@ export interface TeamDocumentHandle {
     timestamp: string
   ): VotingStorySelectionResult;
   /** Upserts one joined participant's vote after rechecking the active round and scale snapshot. */
-  castVotingVote(sessionId: string, roundId: string, vote: VoteRecord): VotingVoteResult;
+  castVotingVote(sessionId: string, roundId: string, vote: VotingVoteCommand): VotingVoteResult;
   /** Applies one host timer command after rechecking the current active round. */
   updateVotingTimer(
     sessionId: string,
@@ -310,7 +323,9 @@ export interface TeamDocumentHandle {
     roundId: string,
     scaleValue: string,
     currentUser: UserReference,
-    timestamp: string
+    timestamp: string,
+    operationId: string,
+    supersedesOperationId?: string
   ): VotingFinalizeResult;
   /** Ends the matching open session and cancels any unfinished active round atomically. */
   endVotingSession(

@@ -8,6 +8,7 @@ import type {
 } from '../domain/planningPokerDomain';
 import { isHostedBy, TeamRepository, TeamRepositoryError } from '../repository/teamRepository';
 import type { HostedTeamSummary, TeamDocumentHandle } from '../repository/teamRepository';
+import { selectCanonicalVotes } from '../repository/collaborationReconciliation';
 import { writePlanningPokerRoute } from '../shell/planningPokerRoute';
 
 /** Stable expected failures for the session-entry experience. */
@@ -414,12 +415,22 @@ export class VotingSessionService implements IVotingSessionService {
       );
     }
     try {
+      const round = context.getSession().rounds.find((candidate) => candidate.id === roundId);
+      const priorVote =
+        round === undefined
+          ? undefined
+          : selectCanonicalVotes(round).find((vote) => vote.participantId === participantId);
+      const isRetry = priorVote?.value === scaleValue && priorVote.operationId !== undefined;
       const result = context.handle.castVotingVote(context.getSession().id, roundId, {
+        operationId: isRetry ? priorVote.operationId : this.createId(),
+        ...(isRetry || priorVote?.operationId === undefined
+          ? {}
+          : { supersedesOperationId: priorVote.operationId }),
         participantId,
         value: scaleValue,
         castAt: this.now()
       });
-      if (result !== 'cast') {
+      if (result !== 'cast' && result !== 'already-cast') {
         throw this.createVoteMutationError(result);
       }
       await context.handle.waitForSaved();
@@ -520,12 +531,19 @@ export class VotingSessionService implements IVotingSessionService {
     scaleValue: string
   ): Promise<VotingSession> {
     try {
+      const round = context.getSession().rounds.find((candidate) => candidate.id === roundId);
+      const isRetry =
+        round?.status === 'Finalized' &&
+        round.assignedValue === scaleValue &&
+        round.finalizationOperationId !== undefined;
       const result = context.handle.finalizeVotingRound(
         context.getSession().id,
         roundId,
         scaleValue,
         this.currentUser,
-        this.now()
+        this.now(),
+        isRetry ? round.finalizationOperationId : this.createId(),
+        isRetry ? undefined : round?.finalizationOperationId
       );
       if (result !== 'finalized' && result !== 'already-finalized') {
         const errors = {
@@ -548,6 +566,14 @@ export class VotingSessionService implements IVotingSessionService {
           'invalid-story': new VotingSessionError(
             'invalid-round',
             'The source story is no longer ready for assignment.'
+          ),
+          'invalid-command': new VotingSessionError(
+            'invalid-estimate',
+            'This assignment could not be identified safely.'
+          ),
+          'reconciled-conflict': new VotingSessionError(
+            'invalid-estimate',
+            'Another assignment converged first. Review the current estimate before retrying.'
           )
         } as const;
         throw errors[result];
@@ -764,6 +790,13 @@ export class VotingSessionService implements IVotingSessionService {
         );
       case 'invalid-vote':
         return new VotingSessionError('invalid-vote', 'Select a value from this session scale.');
+      case 'invalid-command':
+        return new VotingSessionError('invalid-vote', 'This vote could not be identified safely.');
+      case 'reconciled-conflict':
+        return new VotingSessionError(
+          'invalid-vote',
+          'Another vote from this participant converged first. Review the selected value.'
+        );
       case 'invalid-round':
         return new VotingSessionError(
           'invalid-round',

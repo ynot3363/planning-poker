@@ -361,18 +361,87 @@ function createHarness(
       listeners.forEach((listener) => listener());
       return 'reopened';
     }),
-    finalizeVotingRound: jest.fn((sessionId, roundId, scaleValue, currentUser, timestamp) => {
-      const session = document.sessions.find((candidate) => candidate.id === sessionId);
-      if (session === undefined || session.status !== 'Active') return 'invalid-session';
-      if (!document.team.hosts.some((host) => host.objectId === currentUser.objectId)) {
-        return 'host-required';
-      }
-      const round = session.rounds.find((candidate) => candidate.id === roundId);
-      if (round?.status === 'Finalized') {
-        if (round.assignedValue === scaleValue) return 'already-finalized';
+    finalizeVotingRound: jest.fn(
+      (
+        sessionId,
+        roundId,
+        scaleValue,
+        currentUser,
+        timestamp,
+        operationId,
+        supersedesOperationId
+      ) => {
+        const session = document.sessions.find((candidate) => candidate.id === sessionId);
+        if (session === undefined || session.status !== 'Active') return 'invalid-session';
+        if (!document.team.hosts.some((host) => host.objectId === currentUser.objectId)) {
+          return 'host-required';
+        }
+        const round = session.rounds.find((candidate) => candidate.id === roundId);
+        if (round?.status === 'Finalized') {
+          if (round.assignedValue === scaleValue) return 'already-finalized';
+          if (session.settings.scaleValues.indexOf(scaleValue) < 0) return 'invalid-estimate';
+          const story = document.stories.find(
+            (candidate) => candidate.id === round.storyId && candidate.status === 'Pointed'
+          );
+          if (story === undefined) return 'invalid-story';
+          document = {
+            ...document,
+            stories: document.stories.map((candidate) =>
+              candidate.id === story.id
+                ? {
+                    ...candidate,
+                    currentEstimate: scaleValue,
+                    estimateHistory: [
+                      ...candidate.estimateHistory,
+                      {
+                        operationId,
+                        ...(supersedesOperationId === undefined ? {} : { supersedesOperationId }),
+                        sessionId,
+                        roundId,
+                        value: scaleValue,
+                        finalizedAt: timestamp,
+                        finalizedBy: currentUser
+                      }
+                    ],
+                    updatedAt: timestamp,
+                    updatedBy: currentUser
+                  }
+                : candidate
+            ),
+            sessions: document.sessions.map((candidate) =>
+              candidate.id === sessionId
+                ? {
+                    ...candidate,
+                    rounds: candidate.rounds.map((item) =>
+                      item.id === roundId
+                        ? {
+                            ...item,
+                            assignedValue: scaleValue,
+                            finalizedAt: timestamp,
+                            finalizedBy: currentUser,
+                            finalizationOperationId: operationId
+                          }
+                        : item
+                    ),
+                    updatedAt: timestamp
+                  }
+                : candidate
+            ),
+            updatedAt: timestamp
+          };
+          listeners.forEach((listener) => listener());
+          return 'finalized';
+        }
+        if (
+          round === undefined ||
+          session.activeRoundId !== roundId ||
+          round.status !== 'Revealed'
+        ) {
+          return 'invalid-round';
+        }
         if (session.settings.scaleValues.indexOf(scaleValue) < 0) return 'invalid-estimate';
         const story = document.stories.find(
-          (candidate) => candidate.id === round.storyId && candidate.status === 'Pointed'
+          (candidate) => candidate.id === round.storyId && candidate.status === 'Ready'
         );
         if (story === undefined) return 'invalid-story';
         document = {
@@ -381,10 +450,12 @@ function createHarness(
             candidate.id === story.id
               ? {
                   ...candidate,
+                  status: 'Pointed',
                   currentEstimate: scaleValue,
                   estimateHistory: [
                     ...candidate.estimateHistory,
                     {
+                      operationId,
                       sessionId,
                       roundId,
                       value: scaleValue,
@@ -405,12 +476,16 @@ function createHarness(
                     item.id === roundId
                       ? {
                           ...item,
+                          status: 'Finalized',
                           assignedValue: scaleValue,
                           finalizedAt: timestamp,
-                          finalizedBy: currentUser
+                          finalizedBy: currentUser,
+                          finalizationOperationId: operationId
                         }
                       : item
                   ),
+                  activeRoundId: undefined,
+                  finalizedRoundIds: [...candidate.finalizedRoundIds, roundId],
                   updatedAt: timestamp
                 }
               : candidate
@@ -420,63 +495,7 @@ function createHarness(
         listeners.forEach((listener) => listener());
         return 'finalized';
       }
-      if (round === undefined || session.activeRoundId !== roundId || round.status !== 'Revealed') {
-        return 'invalid-round';
-      }
-      if (session.settings.scaleValues.indexOf(scaleValue) < 0) return 'invalid-estimate';
-      const story = document.stories.find(
-        (candidate) => candidate.id === round.storyId && candidate.status === 'Ready'
-      );
-      if (story === undefined) return 'invalid-story';
-      document = {
-        ...document,
-        stories: document.stories.map((candidate) =>
-          candidate.id === story.id
-            ? {
-                ...candidate,
-                status: 'Pointed',
-                currentEstimate: scaleValue,
-                estimateHistory: [
-                  ...candidate.estimateHistory,
-                  {
-                    sessionId,
-                    roundId,
-                    value: scaleValue,
-                    finalizedAt: timestamp,
-                    finalizedBy: currentUser
-                  }
-                ],
-                updatedAt: timestamp,
-                updatedBy: currentUser
-              }
-            : candidate
-        ),
-        sessions: document.sessions.map((candidate) =>
-          candidate.id === sessionId
-            ? {
-                ...candidate,
-                rounds: candidate.rounds.map((item) =>
-                  item.id === roundId
-                    ? {
-                        ...item,
-                        status: 'Finalized',
-                        assignedValue: scaleValue,
-                        finalizedAt: timestamp,
-                        finalizedBy: currentUser
-                      }
-                    : item
-                ),
-                activeRoundId: undefined,
-                finalizedRoundIds: [...candidate.finalizedRoundIds, roundId],
-                updatedAt: timestamp
-              }
-            : candidate
-        ),
-        updatedAt: timestamp
-      };
-      listeners.forEach((listener) => listener());
-      return 'finalized';
-    }),
+    ),
     endVotingSession: jest.fn((sessionId, currentUser, timestamp) => {
       const session = document.sessions.find((candidate) => candidate.id === sessionId);
       if (session?.status === 'Ended') return 'already-ended';
@@ -844,6 +863,17 @@ describe('VotingSessionService', () => {
 
     await harness.service.castVote(joined, round.id, '3');
     await harness.service.castVote(joined, round.id, '5');
+    const voteCalls = jest.mocked(harness.handle.castVotingVote).mock.calls;
+    expect(voteCalls[1][2]).toMatchObject({
+      supersedesOperationId: voteCalls[0][2].operationId
+    });
+    await harness.service.castVote(joined, round.id, '5');
+    expect(jest.mocked(harness.handle.castVotingVote).mock.calls[2][2]).toEqual(
+      expect.objectContaining({ operationId: voteCalls[1][2].operationId, value: '5' })
+    );
+    expect(jest.mocked(harness.handle.castVotingVote).mock.calls[2][2]).not.toHaveProperty(
+      'supersedesOperationId'
+    );
 
     expect(joined.getSession().rounds[0].votes).toEqual([
       expect.objectContaining({ participantId: joined.participantId, value: '5' })
@@ -951,10 +981,15 @@ describe('VotingSessionService', () => {
     await expect(harness.service.finalizeEstimate(host, roundId, '5')).rejects.toMatchObject({
       code: 'save-failure'
     });
+    const firstFinalizationOperationId = harness.getDocument().sessions[0].rounds[0]
+      .finalizationOperationId as string;
 
     await expect(harness.service.finalizeEstimate(host, roundId, '5')).resolves.toMatchObject({
       finalizedRoundIds: [roundId]
     });
+    const retryCall = jest.mocked(harness.handle.finalizeVotingRound).mock.calls[2];
+    expect(retryCall[5]).toBe(firstFinalizationOperationId);
+    expect(retryCall[6]).toBeUndefined();
     expect(harness.getDocument().stories[0]).toMatchObject({
       status: 'Pointed',
       currentEstimate: '5',
@@ -962,6 +997,9 @@ describe('VotingSessionService', () => {
     });
     expect(harness.getDocument().stories[0].estimateHistory).toHaveLength(1);
     await harness.service.finalizeEstimate(host, roundId, '8');
+    const correctionCall = jest.mocked(harness.handle.finalizeVotingRound).mock.calls[3];
+    expect(correctionCall[5]).not.toBe(firstFinalizationOperationId);
+    expect(correctionCall[6]).toBe(firstFinalizationOperationId);
     expect(host.getSession().finalizedRoundIds).toEqual([roundId]);
     expect(harness.getDocument().stories[0]).toMatchObject({
       currentEstimate: '8',
