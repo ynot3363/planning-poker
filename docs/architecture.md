@@ -298,6 +298,17 @@ available. The repository may return an idempotent or reconciled-conflict
 result; services show recovery guidance and refresh from the canonical read
 model rather than treating a locally accepted write as globally authoritative.
 
+Automatic reveal is another idempotent reconciliation projection. One typed
+eligibility command rechecks the authoritative open Active session, current
+Voting round, live connected participant IDs, canonical vote slots, and the
+session scale. It runs after accepted votes, Named disconnects, Anonymous
+removal, Presence roster reconciliation, and converged tree changes. At least
+one connected participant must remain and every connected participant must
+have a valid in-scale vote. Automatic audit fields derive from the same stable
+canonical vote on every client and do not identify the client or person that
+ran reconciliation. Repeated attempts return already-revealed or not-eligible
+without another mutation.
+
 This is an application-level last-writer rule based on causal intent, not time:
 an observed child supersedes its parent, while simultaneous siblings use the
 stable-ID tie-break. Multi-client tests must delay and reorder operations, run
@@ -330,6 +341,12 @@ estimate appends history without duplicating the finalized-round index. Refresh
 SharePoint discovery metadata after the Fluid finalization is acknowledged; an
 idempotent retry must not duplicate history.
 See `docs/voting-results.md` for the result and assignment contract.
+
+SharedTree change notifications schedule reconciliation outside the read
+callback and coalesce pending work. A reconciliation transaction that finds no
+repair performs no persisted field changes, preventing feedback loops and
+repeated save churn. Presence-only changes never write SharePoint discovery
+metadata.
 
 Ending an open session is another host-authorized transaction. It cancels an
 unfinished round, records end audit fields, clears the active round and root

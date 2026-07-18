@@ -40,6 +40,7 @@ interface MutableRoot {
 }
 
 interface MutableSession {
+  status: VotingSession['status'];
   readonly participants: readonly SessionParticipant[];
   readonly rounds: readonly StoryVotingRound[];
   readonly finalizedRoundIds: readonly string[];
@@ -268,6 +269,7 @@ describe('collaboration reconciliation with independent Fluid clients', () => {
       if (session === undefined) {
         throw new Error('Expected the canonical session after reconciliation.');
       }
+      session.status = 'Active';
       appendTreeValue(session.participants, participant('Named', namedId));
       appendTreeValue(session.participants, participant('Anonymous', anonymousId));
       appendTreeValue(session.rounds, createRound(roundId, story));
@@ -326,7 +328,7 @@ describe('collaboration reconciliation with independent Fluid clients', () => {
         {
           operationId: 'vote-anonymous-z',
           participantId: 'anonymous-z',
-          value: '13',
+          value: '8',
           castAt: '2026-07-17T10:00:01.000Z'
         }
       ])
@@ -340,16 +342,22 @@ describe('collaboration reconciliation with independent Fluid clients', () => {
     runtimeFactory.processAllMessages();
 
     const revealedSnapshot = readSnapshot(first.view.root);
-    expect(
-      revealedSnapshot.sessions
-        .find((session) => session.id === 'session-a')
-        ?.rounds.find((round) => round.id === 'round-a')
-    ).toMatchObject({
+    const revealedRound = revealedSnapshot.sessions
+      .find((session) => session.id === 'session-a')
+      ?.rounds.find((round) => round.id === 'round-a');
+    expect(revealedRound).toMatchObject({
       status: 'Revealed',
       revealReason: 'Automatic',
       revealedVotedCount: 3,
-      revealedMissingCount: 0
+      revealedMissingCount: 0,
+      timer: {
+        status: 'Stopped',
+        remainingSeconds: 300,
+        stoppedAt: '2026-07-17T10:00:01.000Z'
+      }
     });
+    expect(revealedRound?.revealedBy).toBeUndefined();
+    expect(readSnapshot(second.view.root)).toEqual(revealedSnapshot);
 
     const finalize = (
       root: MutableRoot,

@@ -11,7 +11,8 @@ import {
   createCanonicalVoteOperationKey,
   isValidOperationId,
   reconcileCollaborativeDocument,
-  selectCanonicalVotes
+  selectCanonicalVotes,
+  tryAutoReveal
 } from './collaborationReconciliation';
 
 /**
@@ -57,12 +58,164 @@ function createSession(id: string, rounds: readonly StoryVotingRound[] = []): Vo
   };
 }
 
+/**
+ * Creates an Active document for automatic-reveal command tests.
+ *
+ * @param votes - Vote records placed in the current round.
+ * @returns A document with two Named participants and one current Voting round.
+ */
+function createAutoRevealDocument(votes: readonly VoteRecord[]): PlanningPokerDocumentRoot {
+  const story = createStory();
+  const round: StoryVotingRound = {
+    id: 'round-auto',
+    storyId: story.id,
+    storySnapshot: { storyId: story.id, title: story.title, description: story.description },
+    status: 'Voting',
+    votes,
+    timer: {
+      configuredDurationSeconds: 300,
+      status: 'Running',
+      remainingSeconds: 300,
+      startedAt: '2026-07-17T09:59:30.000Z'
+    }
+  };
+  const session: VotingSession = {
+    ...createSession('session-auto', [round]),
+    participants: ['participant-1', 'participant-2'].map((participantId) => ({
+      kind: 'Named' as const,
+      id: participantId,
+      user: { ...fixtureUser, objectId: participantId },
+      joinedAt: fixtureDocument.createdAt,
+      presence: { connection: 'Connected' as const, lastSeenAt: fixtureDocument.updatedAt }
+    }))
+  };
+  return JSON.parse(
+    JSON.stringify({
+      ...fixtureDocument,
+      stories: [story],
+      sessions: [session],
+      openSessionId: session.id
+    })
+  ) as PlanningPokerDocumentRoot;
+}
+
 describe('collaborative reconciliation', () => {
   it('validates bounded stable operation identities', () => {
     expect(isValidOperationId('vote-command-1')).toBe(true);
     expect(isValidOperationId('')).toBe(false);
     expect(isValidOperationId('   ')).toBe(false);
     expect(isValidOperationId('x'.repeat(201))).toBe(false);
+  });
+
+  it('returns typed eligibility outcomes without revealing zero-participant rounds', () => {
+    const document = createAutoRevealDocument([]);
+
+    expect(
+      tryAutoReveal(document, {
+        sessionId: 'session-auto',
+        roundId: 'round-auto',
+        connectedParticipantIds: []
+      })
+    ).toEqual({
+      status: 'not-eligible',
+      reason: 'no-connected-participants',
+      votedCount: 0,
+      missingCount: 0
+    });
+    expect(
+      tryAutoReveal(document, {
+        sessionId: 'session-auto',
+        roundId: 'round-auto',
+        connectedParticipantIds: ['participant-1']
+      })
+    ).toEqual({
+      status: 'not-eligible',
+      reason: 'missing-votes',
+      votedCount: 0,
+      missingCount: 1
+    });
+    expect(document.sessions[0].rounds[0].status).toBe('Voting');
+  });
+
+  it('reveals once when every connected participant has a valid canonical vote', () => {
+    const document = createAutoRevealDocument([
+      {
+        operationId: 'vote-b',
+        participantId: 'participant-1',
+        value: '3',
+        castAt: '2026-07-17T10:00:30.000Z'
+      },
+      {
+        operationId: 'vote-a',
+        participantId: 'participant-2',
+        value: '5',
+        castAt: '2026-07-17T10:00:00.000Z'
+      }
+    ]);
+    const command = {
+      sessionId: 'session-auto',
+      roundId: 'round-auto',
+      connectedParticipantIds: ['participant-1']
+    } as const;
+
+    expect(tryAutoReveal(document, command)).toEqual({
+      status: 'applied',
+      votedCount: 2,
+      missingCount: 0
+    });
+    expect(document.sessions[0].rounds[0]).toMatchObject({
+      status: 'Revealed',
+      revealedAt: '2026-07-17T10:00:00.000Z',
+      revealReason: 'Automatic',
+      revealedVotedCount: 2,
+      revealedMissingCount: 0,
+      timer: {
+        status: 'Stopped',
+        remainingSeconds: 270,
+        stoppedAt: '2026-07-17T10:00:00.000Z'
+      }
+    });
+    expect(document.sessions[0].rounds[0].revealedBy).toBeUndefined();
+    expect(tryAutoReveal(document, command)).toEqual({ status: 'already-revealed' });
+  });
+
+  it('rejects stale, non-current, and invalid-vote automatic reveal attempts', () => {
+    const document = createAutoRevealDocument([
+      {
+        operationId: 'vote-invalid',
+        participantId: 'participant-1',
+        value: '100',
+        castAt: fixtureDocument.updatedAt
+      }
+    ]);
+
+    expect(
+      tryAutoReveal(document, {
+        sessionId: 'missing-session',
+        roundId: 'round-auto',
+        connectedParticipantIds: ['participant-1']
+      })
+    ).toEqual({ status: 'stale', reason: 'session-not-found' });
+    expect(
+      tryAutoReveal(document, {
+        sessionId: 'session-auto',
+        roundId: 'missing-round',
+        connectedParticipantIds: ['participant-1']
+      })
+    ).toEqual({ status: 'stale', reason: 'round-not-found' });
+    expect(
+      tryAutoReveal(document, {
+        sessionId: 'session-auto',
+        roundId: 'round-auto',
+        connectedParticipantIds: ['participant-1']
+      })
+    ).toEqual({
+      status: 'not-eligible',
+      reason: 'invalid-vote',
+      votedCount: 0,
+      missingCount: 1
+    });
+    expect(document.sessions[0].rounds[0].status).toBe('Voting');
   });
 
   it('repairs concurrent keyed facts deterministically and idempotently', () => {

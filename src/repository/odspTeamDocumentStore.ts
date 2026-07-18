@@ -503,6 +503,44 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
       'planning-poker:participant:v1',
       presenceSchema
     ).states.participant;
+    const getBinding = (attendee: Attendee): IParticipantPresenceBinding | undefined =>
+      participantPresence.getRemote(attendee).value();
+    const hasConnectedBinding = (binding: IParticipantPresenceBinding): boolean => {
+      const myself = presence.attendees.getMyself();
+      if (
+        myself.getConnectionStatus() === 'Connected' &&
+        participantPresence.local.sessionId === binding.sessionId &&
+        participantPresence.local.participantId === binding.participantId
+      ) {
+        return true;
+      }
+      return participantPresence.getStateAttendees().some((attendee: Attendee) => {
+        if (attendee === myself) {
+          return false;
+        }
+        const candidate = getBinding(attendee);
+        return (
+          attendee.getConnectionStatus() === 'Connected' &&
+          candidate?.sessionId === binding.sessionId &&
+          candidate.participantId === binding.participantId
+        );
+      });
+    };
+    const isParticipantConnected = (sessionId: string, participant: SessionParticipant): boolean =>
+      participant.presence.connection === 'Connected' ||
+      hasConnectedBinding({
+        sessionId,
+        participantId: participant.id,
+        mode: participant.kind
+      });
+    const reconcileWithPresence = (document: PlanningPokerDocumentRoot): void => {
+      reconcileCollaborativeDocument(document, {
+        getConnectedParticipantIds: (session) =>
+          session.participants
+            .filter((participant) => isParticipantConnected(session.id, participant))
+            .map((participant) => participant.id)
+      });
+    };
     const setParticipantConnection = (
       sessionId: string,
       participantId: string,
@@ -519,8 +557,12 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
           return;
         }
         const presence = participant.presence as IMutableParticipantPresence;
+        if (presence.connection === connection) {
+          return;
+        }
         presence.connection = connection;
         presence.lastSeenAt = timestamp;
+        reconcileWithPresence(root as unknown as PlanningPokerDocumentRoot);
       });
     };
     const removeAnonymousPresenceParticipant = (
@@ -554,41 +596,12 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
         if (activeRound !== undefined && voteIndex >= 0) {
           removeTreeItemAt(activeRound.votes, voteIndex);
         }
+        reconcileWithPresence(root as unknown as PlanningPokerDocumentRoot);
         const session = sessionNode as unknown as IMutableVotingSession;
         session.updatedAt = timestamp;
         document.updatedAt = timestamp;
       });
     };
-    const getBinding = (attendee: Attendee): IParticipantPresenceBinding | undefined =>
-      participantPresence.getRemote(attendee).value();
-    const hasConnectedBinding = (binding: IParticipantPresenceBinding): boolean => {
-      const myself = presence.attendees.getMyself();
-      if (
-        myself.getConnectionStatus() === 'Connected' &&
-        participantPresence.local.sessionId === binding.sessionId &&
-        participantPresence.local.participantId === binding.participantId
-      ) {
-        return true;
-      }
-      return participantPresence.getStateAttendees().some((attendee: Attendee) => {
-        if (attendee === myself) {
-          return false;
-        }
-        const candidate = getBinding(attendee);
-        return (
-          attendee.getConnectionStatus() === 'Connected' &&
-          candidate?.sessionId === binding.sessionId &&
-          candidate.participantId === binding.participantId
-        );
-      });
-    };
-    const isParticipantConnected = (sessionId: string, participant: SessionParticipant): boolean =>
-      participant.presence.connection === 'Connected' ||
-      hasConnectedBinding({
-        sessionId,
-        participantId: participant.id,
-        mode: participant.kind
-      });
     const handlePresenceConnected = (binding: IParticipantPresenceBinding): void => {
       if (binding.mode !== 'None') {
         setParticipantConnection(
@@ -734,12 +747,7 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
       isReconcilingCollaborativeState = true;
       try {
         Tree.runTransaction(view, (root) => {
-          reconcileCollaborativeDocument(root as unknown as PlanningPokerDocumentRoot, {
-            getConnectedParticipantIds: (session) =>
-              session.participants
-                .filter((participant) => isParticipantConnected(session.id, participant))
-                .map((participant) => participant.id)
-          });
+          reconcileWithPresence(root as unknown as PlanningPokerDocumentRoot);
         });
       } finally {
         isReconcilingCollaborativeState = false;
@@ -1041,12 +1049,7 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
             value: vote.value,
             castAt: vote.castAt
           });
-          reconcileCollaborativeDocument(root as unknown as PlanningPokerDocumentRoot, {
-            getConnectedParticipantIds: (sessionNode) =>
-              sessionNode.participants
-                .filter((participant) => isParticipantConnected(sessionNode.id, participant))
-                .map((participant) => participant.id)
-          });
+          reconcileWithPresence(root as unknown as PlanningPokerDocumentRoot);
           session.updatedAt = vote.castAt;
           document.updatedAt = vote.castAt;
           const acceptedVote = selectCanonicalVotes(round).find(

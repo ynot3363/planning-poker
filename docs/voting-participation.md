@@ -18,6 +18,12 @@ participant binding and performs a short delayed reconciliation against the
 connected attendee set, covering disconnect events whose remote state has
 already been removed.
 
+Every accepted Named disconnect re-evaluates automatic reveal. If the departing
+participant was the final non-voter, the round reveals once the remaining
+connected voters all have valid votes. A later reconnect or join can update the
+roster but cannot reopen a round already frozen as `Revealed` or add a vote to
+it.
+
 Configured team members and authenticated link invitees use the same join flow.
 Only people who join the session are eligible voters; configured members who do
 not join are not counted as remaining votes. A host may join as a voter without
@@ -43,6 +49,12 @@ participant ID, and mode. When that attendee disconnects, other clients remove
 the Anonymous roster entry and its active unrevealed vote. A later reconnect
 recreates participation and may receive a new alias. The reconnect record is
 not placed in the URL or Fluid state.
+
+Anonymous removal deletes the active unrevealed vote before automatic
+eligibility is evaluated. Removing the last participant therefore leaves a
+zero-participant round in `Voting`; removing a non-voter may reveal only when at
+least one connected participant remains and all remaining participants have
+valid votes.
 
 Alias allocation is eventually deterministic under simultaneous joins.
 Reconciliation orders Anonymous participant IDs by Unicode code unit and

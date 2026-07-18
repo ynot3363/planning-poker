@@ -21,9 +21,20 @@ Anonymous sessions expose only scale-ordered counts, percentages, voted count,
 and missing count. Percentages use the number of submitted votes as the
 denominator and are zero when no votes exist.
 
-Automatic Anonymous reveal does not persist the authenticated final voter as a
-reveal actor. This preserves the Anonymous session contract; manual host reveal
-may record the host already present in the team's host configuration.
+Automatic reveal never persists a participant or authenticated client as the
+reveal actor in either voting mode. Its timestamp, counts, reason, and timer
+stop derive deterministically from canonical persisted votes, so simultaneous
+final votes or reconciliation attempts converge to the same non-personal audit
+state. Manual host reveal remains a separate command and may record the host
+already present in the team's host configuration.
+
+The automatic eligibility command also runs after Named disconnects, Anonymous
+participant-and-vote removal, Presence roster reconciliation, and converged
+tree changes. It returns typed applied, already-revealed, not-eligible, stale,
+or rejected outcomes and mutates only for the first eligible `Voting` state.
+At least one connected participant must remain; every connected participant's
+canonical vote must match the session scale. Reconnects and late joins cannot
+reopen or add votes to an already Revealed round.
 
 A host may select **Undo reveal** only while the current round is Revealed. The
 round returns to Voting, reveal metadata is cleared, and existing votes plus the

@@ -48,7 +48,10 @@ interface IMutableRound {
 
 interface IMutableTimer {
   status: StoryVotingRound['timer']['status'];
+  remainingSeconds: number;
+  startedAt?: string;
   stoppedAt?: string;
+  resetAt?: string;
 }
 
 interface IMutableVote {
@@ -79,6 +82,74 @@ export interface CollaborationReconciliationOptions {
   /** Resolves the currently connected participant IDs for one session. */
   readonly getConnectedParticipantIds?: (session: VotingSession) => readonly string[];
 }
+
+/** Stable reasons explaining why automatic reveal did not change a round. */
+export type AutoRevealReason =
+  | 'session-not-found'
+  | 'session-not-open'
+  | 'session-not-active'
+  | 'round-not-found'
+  | 'round-not-current'
+  | 'round-not-voting'
+  | 'no-connected-participants'
+  | 'missing-votes'
+  | 'invalid-vote'
+  | 'unchanged-votes-after-undo';
+
+/** Authoritative inputs for one automatic-reveal eligibility evaluation. */
+export interface AutoRevealCommand {
+  /** Open session expected by the caller or reconciliation pass. */
+  readonly sessionId: string;
+  /** Current round expected by the caller or reconciliation pass. */
+  readonly roundId: string;
+  /** Participant IDs currently connected according to Fluid Presence. */
+  readonly connectedParticipantIds: readonly string[];
+}
+
+/** Typed result from an idempotent automatic-reveal attempt. */
+export type AutoRevealResult =
+  | {
+      /** The eligible Voting round was frozen and revealed. */
+      readonly status: 'applied';
+      /** Number of valid joined-participant votes captured by the reveal. */
+      readonly votedCount: number;
+      /** Number of connected eligible participants without a valid vote. */
+      readonly missingCount: number;
+    }
+  | {
+      /** The authoritative round was already frozen in Revealed state. */
+      readonly status: 'already-revealed';
+    }
+  | {
+      /** The authoritative round remains open because voting is incomplete or suppressed. */
+      readonly status: 'not-eligible';
+      /** Eligibility condition that currently prevents reveal. */
+      readonly reason:
+        | 'no-connected-participants'
+        | 'missing-votes'
+        | 'invalid-vote'
+        | 'unchanged-votes-after-undo';
+      /** Number of valid joined-participant votes currently present. */
+      readonly votedCount: number;
+      /** Number of connected eligible participants without a valid vote. */
+      readonly missingCount: number;
+    }
+  | {
+      /** The command IDs no longer identify the authoritative open session and current round. */
+      readonly status: 'stale';
+      /** Stale identity or lifecycle condition observed in the document. */
+      readonly reason:
+        | 'session-not-found'
+        | 'session-not-open'
+        | 'round-not-found'
+        | 'round-not-current';
+    }
+  | {
+      /** The authoritative entities exist but their lifecycle does not permit automatic reveal. */
+      readonly status: 'rejected';
+      /** Lifecycle condition that rejects the command. */
+      readonly reason: 'session-not-active' | 'round-not-voting';
+    };
 
 /**
  * Checks an opaque retry identity before it enters collaborative state.
@@ -149,6 +220,106 @@ export function createCanonicalVoteOperationKey(round: StoryVotingRound): string
 }
 
 /**
+ * Reveals an eligible round from authoritative roster, vote, and Presence state.
+ *
+ * @remarks
+ * This command is synchronous and idempotent. Automatic audit fields are derived only from
+ * persisted canonical votes, never from the client running reconciliation or operation arrival
+ * order. It deliberately does not persist a reveal actor.
+ *
+ * @param document - Current hydrated SharedTree root or isolated mutable test root.
+ * @param command - Expected session and round IDs plus the live connected participant set.
+ * @returns A typed applied, already-revealed, not-eligible, stale, or rejected outcome.
+ */
+export function tryAutoReveal(
+  document: PlanningPokerDocumentRoot,
+  command: AutoRevealCommand
+): AutoRevealResult {
+  const sessionNode = document.sessions.find((session) => session.id === command.sessionId);
+  if (sessionNode === undefined) {
+    return { status: 'stale', reason: 'session-not-found' };
+  }
+  if (document.openSessionId !== sessionNode.id) {
+    return { status: 'stale', reason: 'session-not-open' };
+  }
+  if (sessionNode.status !== 'Active') {
+    return { status: 'rejected', reason: 'session-not-active' };
+  }
+  const roundNode = sessionNode.rounds.find((round) => round.id === command.roundId);
+  if (roundNode === undefined) {
+    return { status: 'stale', reason: 'round-not-found' };
+  }
+  if (sessionNode.activeRoundId !== roundNode.id) {
+    return { status: 'stale', reason: 'round-not-current' };
+  }
+  if (roundNode.status === 'Revealed') {
+    return { status: 'already-revealed' };
+  }
+  if (roundNode.status !== 'Voting') {
+    return { status: 'rejected', reason: 'round-not-voting' };
+  }
+
+  const participantIds = new Set(sessionNode.participants.map((participant) => participant.id));
+  const connectedIds = new Set(
+    command.connectedParticipantIds.filter((participantId) => participantIds.has(participantId))
+  );
+  const canonicalVotes = selectCanonicalVotes(roundNode);
+  const validVotes = canonicalVotes.filter(
+    (vote) =>
+      participantIds.has(vote.participantId) &&
+      sessionNode.settings.scaleValues.indexOf(vote.value) >= 0
+  );
+  const validVotesByParticipant = new Map(
+    validVotes.map((vote): readonly [string, VoteRecord] => [vote.participantId, vote])
+  );
+  const missingCount = Array.from(connectedIds).filter(
+    (participantId) => !validVotesByParticipant.has(participantId)
+  ).length;
+  const invalidConnectedVote = canonicalVotes.some(
+    (vote) =>
+      connectedIds.has(vote.participantId) &&
+      sessionNode.settings.scaleValues.indexOf(vote.value) < 0
+  );
+  const eligibility = {
+    votedCount: validVotes.length,
+    missingCount
+  };
+  if (connectedIds.size === 0) {
+    return { status: 'not-eligible', reason: 'no-connected-participants', ...eligibility };
+  }
+  if (invalidConnectedVote) {
+    return { status: 'not-eligible', reason: 'invalid-vote', ...eligibility };
+  }
+  if (missingCount > 0) {
+    return { status: 'not-eligible', reason: 'missing-votes', ...eligibility };
+  }
+  if (roundNode.automaticRevealSuppressionKey === createCanonicalVoteOperationKey(roundNode)) {
+    return {
+      status: 'not-eligible',
+      reason: 'unchanged-votes-after-undo',
+      ...eligibility
+    };
+  }
+
+  const auditVote = validVotes.slice().sort(compareVoteAuditIdentity)[0];
+  if (auditVote === undefined) {
+    return { status: 'not-eligible', reason: 'missing-votes', ...eligibility };
+  }
+  const round = roundNode as unknown as IMutableRound;
+  round.status = 'Revealed';
+  round.revealedAt = auditVote.castAt;
+  round.revealedBy = undefined;
+  round.revealReason = 'Automatic';
+  round.revealedVotedCount = validVotes.length;
+  round.revealedMissingCount = 0;
+  round.automaticRevealSuppressionKey = undefined;
+  if (roundNode.timer.status !== 'Stopped') {
+    stopTimerAt(round.timer, auditVote.castAt);
+  }
+  return { status: 'applied', ...eligibility };
+}
+
+/**
  * Reconciles keyed collaborative facts using only stable IDs and causal supersession links.
  *
  * @remarks
@@ -168,6 +339,10 @@ export function reconcileCollaborativeDocument(
   const root = document as unknown as IMutableRoot;
   let changed = false;
   const canonicalOpen = selectCanonicalOpenSession(document);
+  if (root.openSessionId !== canonicalOpen?.id) {
+    root.openSessionId = canonicalOpen?.id;
+    changed = true;
+  }
 
   document.sessions.forEach((sessionNode) => {
     const session = sessionNode as unknown as IMutableSession;
@@ -181,13 +356,10 @@ export function reconcileCollaborativeDocument(
     }
     changed = reconcileParticipants(sessionNode) || changed;
     changed =
-      reconcileRounds(sessionNode, options.getConnectedParticipantIds?.(sessionNode)) || changed;
+      reconcileRounds(document, sessionNode, options.getConnectedParticipantIds?.(sessionNode)) ||
+      changed;
   });
 
-  if (root.openSessionId !== canonicalOpen?.id) {
-    root.openSessionId = canonicalOpen?.id;
-    changed = true;
-  }
   changed = reconcileEstimateHistory(document) || changed;
   return {
     changed,
@@ -262,11 +434,13 @@ function reconcileParticipants(sessionNode: VotingSession): boolean {
 /**
  * Reconciles the active round, vote slots, and finalized-round index for one session.
  *
+ * @param document - Document containing the authoritative open-session pointer.
  * @param sessionNode - Session whose round facts may have converged concurrently.
  * @param connectedParticipantIds - Live connected roster IDs when Presence is available.
  * @returns Whether any round, vote, pointer, or index field changed.
  */
 function reconcileRounds(
+  document: PlanningPokerDocumentRoot,
   sessionNode: VotingSession,
   connectedParticipantIds: readonly string[] | undefined
 ): boolean {
@@ -275,6 +449,10 @@ function reconcileRounds(
   const canonicalRound = isOpenSession(sessionNode.status)
     ? selectCanonicalActiveRound(sessionNode)
     : undefined;
+  if (session.activeRoundId !== canonicalRound?.id) {
+    session.activeRoundId = canonicalRound?.id;
+    changed = true;
+  }
   sessionNode.rounds.forEach((roundNode) => {
     const round = roundNode as unknown as IMutableRound;
     if (isUnfinishedRound(roundNode.status) && roundNode.id !== canonicalRound?.id) {
@@ -284,14 +462,13 @@ function reconcileRounds(
     changed = reconcileVotes(roundNode) || changed;
     if (roundNode.id === canonicalRound?.id && connectedParticipantIds !== undefined) {
       changed =
-        reconcileAutomaticReveal(sessionNode, roundNode, connectedParticipantIds) || changed;
+        tryAutoReveal(document, {
+          sessionId: sessionNode.id,
+          roundId: roundNode.id,
+          connectedParticipantIds
+        }).status === 'applied' || changed;
     }
   });
-  if (session.activeRoundId !== canonicalRound?.id) {
-    session.activeRoundId = canonicalRound?.id;
-    changed = true;
-  }
-
   const expectedFinalizedIds = sessionNode.rounds
     .filter((round) => round.status === 'Finalized')
     .map((round) => round.id);
@@ -303,64 +480,39 @@ function reconcileRounds(
 }
 
 /**
- * Reveals a Voting round when converged votes cover every Presence-connected participant.
+ * Orders reveal audit candidates by stable operation identity and participant ID.
  *
- * @remarks
- * The reveal audit uses the smallest stable vote operation ID, not arrival time, so independent
- * clients project identical metadata when no local transaction observed the final merged vote.
- *
- * @param sessionNode - Session owning the active round and eligible roster.
- * @param roundNode - Canonical active round after vote reconciliation.
- * @param connectedParticipantIds - Participant IDs reported connected by Fluid Presence.
- * @returns Whether the round was automatically revealed.
+ * @param left - First canonical vote candidate.
+ * @param right - Second canonical vote candidate.
+ * @returns Negative, zero, or positive ordering value.
  */
-function reconcileAutomaticReveal(
-  sessionNode: VotingSession,
-  roundNode: StoryVotingRound,
-  connectedParticipantIds: readonly string[]
-): boolean {
-  if (roundNode.status !== 'Voting') {
-    return false;
-  }
-  const connectedIds = new Set(connectedParticipantIds);
-  const connectedParticipants = sessionNode.participants.filter((participant) =>
-    connectedIds.has(participant.id)
-  );
-  const canonicalVotes = selectCanonicalVotes(roundNode);
-  if (roundNode.automaticRevealSuppressionKey === createCanonicalVoteOperationKey(roundNode)) {
-    return false;
-  }
-  const votedIds = new Set(canonicalVotes.map((vote) => vote.participantId));
-  if (
-    connectedParticipants.length === 0 ||
-    !connectedParticipants.every((participant) => votedIds.has(participant.id))
-  ) {
-    return false;
-  }
-  const auditVote = canonicalVotes
-    .filter((vote) => connectedIds.has(vote.participantId))
-    .slice()
-    .sort((left, right) =>
-      compareStableIds(left.operationId as string, right.operationId as string)
-    )[0];
-  const auditParticipant = sessionNode.participants.find(
-    (participant) => participant.id === auditVote.participantId
-  );
-  const round = roundNode as unknown as IMutableRound;
-  round.status = 'Revealed';
-  round.revealedAt = auditVote.castAt;
-  round.revealReason = 'Automatic';
-  round.revealedVotedCount = canonicalVotes.length;
-  round.revealedMissingCount = 0;
-  round.automaticRevealSuppressionKey = undefined;
-  if (auditParticipant?.kind === 'Named') {
-    round.revealedBy = copyUserReference(auditParticipant.user);
-  }
-  if (roundNode.timer.status !== 'Stopped') {
-    round.timer.status = 'Stopped';
-    round.timer.stoppedAt = auditVote.castAt;
-  }
-  return true;
+function compareVoteAuditIdentity(left: VoteRecord, right: VoteRecord): number {
+  const operationComparison = compareStableIds(left.operationId ?? '', right.operationId ?? '');
+  return operationComparison === 0
+    ? compareStableIds(left.participantId, right.participantId)
+    : operationComparison;
+}
+
+/**
+ * Stops a synchronized timer at a deterministic persisted reveal timestamp.
+ *
+ * @param timer - Mutable timer owned by the revealed round.
+ * @param timestamp - Deterministic reveal timestamp derived from canonical votes.
+ * @returns `void` after the timer lifecycle fields are frozen.
+ */
+function stopTimerAt(timer: IMutableTimer, timestamp: string): void {
+  const elapsedMilliseconds =
+    timer.status === 'Running' && timer.startedAt !== undefined
+      ? Date.parse(timestamp) - Date.parse(timer.startedAt)
+      : 0;
+  const elapsedSeconds = Number.isFinite(elapsedMilliseconds)
+    ? Math.max(0, Math.floor(elapsedMilliseconds / 1000))
+    : 0;
+  timer.status = 'Stopped';
+  timer.remainingSeconds = Math.max(0, timer.remainingSeconds - elapsedSeconds);
+  timer.startedAt = undefined;
+  timer.resetAt = undefined;
+  timer.stoppedAt = timestamp;
 }
 
 /**

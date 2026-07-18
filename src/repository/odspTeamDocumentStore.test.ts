@@ -618,9 +618,26 @@ describe('OdspTeamDocumentStore', () => {
       timer: { status: 'Stopped' }
     });
     expect(
+      handle.joinVotingSession(
+        lobby.id,
+        {
+          kind: 'Named',
+          participantId: 'participant-late',
+          user: {
+            ...fixtureUser,
+            objectId: '00000000-0000-0000-0000-000000000003',
+            displayName: 'Late Participant',
+            loginName: 'late@example.com'
+          }
+        },
+        '2026-07-10T00:02:00.250Z'
+      )
+    ).toMatchObject({ id: 'participant-late' });
+    expect(handle.getSnapshot().sessions[0].rounds[1].status).toBe('Revealed');
+    expect(
       handle.castVotingVote(lobby.id, 'round-2', {
         operationId: 'vote-after-reveal',
-        participantId: 'participant-1',
+        participantId: 'participant-late',
         value: '8',
         castAt: '2026-07-10T00:02:00.500Z'
       })
@@ -733,6 +750,7 @@ describe('OdspTeamDocumentStore', () => {
 
     expect(handle.getSnapshot().sessions[0].participants).toHaveLength(0);
     expect(handle.getSnapshot().sessions[0].rounds[1].votes).toHaveLength(0);
+    expect(handle.getSnapshot().sessions[0].rounds[1].status).toBe('Voting');
     const anonymousRemovedSession = handle.getSnapshot().sessions[0];
     setTestSessions(
       [
@@ -740,6 +758,16 @@ describe('OdspTeamDocumentStore', () => {
           ...anonymousRemovedSession,
           settings: { ...anonymousRemovedSession.settings, votingMode: 'Named' },
           participants: [
+            {
+              kind: 'Named',
+              id: 'named-voter',
+              user: { ...fixtureUser, objectId: 'named-voter-user' },
+              joinedAt: fixtureDocument.createdAt,
+              presence: {
+                connection: 'Connected',
+                lastSeenAt: fixtureDocument.updatedAt
+              }
+            },
             {
               kind: 'Named',
               id: 'named-presence',
@@ -750,7 +778,22 @@ describe('OdspTeamDocumentStore', () => {
                 lastSeenAt: fixtureDocument.updatedAt
               }
             }
-          ]
+          ],
+          rounds: anonymousRemovedSession.rounds.map((round) =>
+            round.id === anonymousRemovedSession.activeRoundId
+              ? {
+                  ...round,
+                  votes: [
+                    {
+                      operationId: 'named-voter-vote',
+                      participantId: 'named-voter',
+                      value: '5',
+                      castAt: fixtureDocument.updatedAt
+                    }
+                  ]
+                }
+              : round
+          )
         }
       ],
       lobby.id,
@@ -776,12 +819,22 @@ describe('OdspTeamDocumentStore', () => {
 
     mockPresenceListeners.get('attendeeDisconnected')?.(disconnectedNamedAttendee);
 
-    expect(handle.getSnapshot().sessions[0].participants).toEqual([
-      expect.objectContaining({
-        id: 'named-presence',
-        presence: expect.objectContaining({ connection: 'Disconnected' })
-      })
-    ]);
+    expect(handle.getSnapshot().sessions[0].participants).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'named-voter' }),
+        expect.objectContaining({
+          id: 'named-presence',
+          presence: expect.objectContaining({ connection: 'Disconnected' })
+        })
+      ])
+    );
+    expect(handle.getSnapshot().sessions[0].rounds[1]).toMatchObject({
+      status: 'Revealed',
+      revealReason: 'Automatic',
+      revealedVotedCount: 1,
+      revealedMissingCount: 0
+    });
+    expect(handle.getSnapshot().sessions[0].rounds[1].revealedBy).toBeUndefined();
     expect(
       handle.endVotingSession(
         lobby.id,
