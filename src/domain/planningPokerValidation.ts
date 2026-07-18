@@ -141,16 +141,27 @@ export function canTransitionSession(from: VotingSessionStatus, to: VotingSessio
 }
 
 /**
+ * Command context required for exceptional voting-round recovery transitions.
+ */
+export type VotingRoundTransitionContext = 'standard' | 'undo-reveal';
+
+/**
  * Determines whether a voting round status transition is allowed.
  *
  * @param from - The current round status.
  * @param to - The requested round status.
+ * @param context - Command context authorizing documented recovery behavior.
  * @returns `true` when the transition preserves the round lifecycle.
  */
-export function canTransitionRound(from: VotingRoundStatus, to: VotingRoundStatus): boolean {
+export function canTransitionRound(
+  from: VotingRoundStatus,
+  to: VotingRoundStatus,
+  context: VotingRoundTransitionContext = 'standard'
+): boolean {
   return (
     (from === 'Voting' && (to === 'Revealed' || to === 'Cancelled')) ||
     (from === 'Revealed' && (to === 'Finalized' || to === 'Cancelled')) ||
+    (from === 'Revealed' && to === 'Voting' && context === 'undo-reveal') ||
     from === to
   );
 }

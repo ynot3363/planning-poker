@@ -44,6 +44,12 @@ operation baseline, preventing the unchanged votes from immediately triggering
 another Automatic reveal. A changed vote clears that condition; the host may
 always reveal manually.
 
+The shared transition validator treats this as an explicit `undo-reveal`
+recovery context. Standard transitions do not allow `Revealed -> Voting`, and
+even the recovery context cannot reopen Finalized or Cancelled rounds or any
+round in Ended history. The host command rechecks that the session is the
+authoritative open Active session and that the Revealed round is still current.
+
 ## Final Estimate
 
 Only a current host can choose the final estimate, and the choice must come from

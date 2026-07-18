@@ -14,6 +14,7 @@ import {
   applyStoryTransition,
   applyTeamActive,
   applyTeamEdit,
+  applyVotingParticipantConnection,
   applyVotingSessionStart
 } from './intentCommands';
 
@@ -51,6 +52,96 @@ function createStory(id: string, title: string): PointingStory {
 }
 
 describe('intent-specific SharedTree commands', () => {
+  it('updates Presence only in the authoritative open Lobby or Active session', () => {
+    const participant = {
+      kind: 'Named' as const,
+      id: 'participant-one',
+      user: fixtureUser,
+      joinedAt: fixtureDocument.createdAt,
+      presence: { connection: 'Connected' as const, lastSeenAt: fixtureDocument.updatedAt }
+    };
+    const lobby: VotingSession = {
+      id: 'session-open',
+      teamId: fixtureDocument.team.id,
+      status: 'Lobby',
+      settings: fixtureDocument.team.settings,
+      participants: [participant],
+      rounds: [],
+      finalizedRoundIds: [],
+      createdAt: fixtureDocument.createdAt,
+      createdBy: fixtureUser,
+      updatedAt: fixtureDocument.updatedAt,
+      updatedBy: fixtureUser
+    };
+    const document = cloneDocument({
+      ...fixtureDocument,
+      sessions: [lobby, { ...lobby, id: 'session-non-open' }],
+      openSessionId: lobby.id
+    });
+
+    expect(
+      applyVotingParticipantConnection(document, {
+        sessionId: lobby.id,
+        participantId: participant.id,
+        connection: 'Disconnected',
+        timestamp: commandTime
+      })
+    ).toBe('updated');
+    expect(document.sessions[0].participants[0].presence).toEqual({
+      connection: 'Disconnected',
+      lastSeenAt: commandTime
+    });
+    expect(
+      applyVotingParticipantConnection(document, {
+        sessionId: lobby.id,
+        participantId: participant.id,
+        connection: 'Disconnected',
+        timestamp: '2026-07-16T15:00:01.000Z'
+      })
+    ).toBe('unchanged');
+    expect(
+      applyVotingParticipantConnection(document, {
+        sessionId: 'session-non-open',
+        participantId: participant.id,
+        connection: 'Disconnected',
+        timestamp: commandTime
+      })
+    ).toBe('invalid-session');
+    expect(
+      applyVotingParticipantConnection(document, {
+        sessionId: 'missing-session',
+        participantId: participant.id,
+        connection: 'Disconnected',
+        timestamp: commandTime
+      })
+    ).toBe('invalid-session');
+
+    const mutableLobby = document.sessions[0] as VotingSession & {
+      status: VotingSession['status'];
+    };
+    mutableLobby.status = 'Active';
+    expect(
+      applyVotingParticipantConnection(document, {
+        sessionId: lobby.id,
+        participantId: participant.id,
+        connection: 'Connected',
+        timestamp: '2026-07-16T15:00:02.000Z'
+      })
+    ).toBe('updated');
+    mutableLobby.status = 'Ended';
+    (document as PlanningPokerDocumentRoot & { openSessionId?: string }).openSessionId = undefined;
+    const endedSnapshot = cloneDocument(document);
+    expect(
+      applyVotingParticipantConnection(document, {
+        sessionId: lobby.id,
+        participantId: participant.id,
+        connection: 'Disconnected',
+        timestamp: '2026-07-16T15:00:03.000Z'
+      })
+    ).toBe('session-ended');
+    expect(document).toEqual(endedSnapshot);
+  });
+
   it('rejects a stale team edit without restoring a removed host or old settings', () => {
     const removedHost: UserReference = {
       objectId: 'removed-host',

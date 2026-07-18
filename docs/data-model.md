@@ -26,6 +26,9 @@ PlanningPokerDocumentRoot
 The root permits at most one `Lobby` or `Active` session and at most one
 unfinished (`Voting` or `Revealed`) round in that session. A session snapshots
 team settings at creation time, so later team edits cannot rewrite history.
+An Ended session is deeply immutable: no roster, Presence, round, vote, timer,
+audit, estimate, or index command may modify it after end/departure operations
+converge.
 
 ## Contract decisions
 
@@ -47,6 +50,14 @@ team settings at creation time, so later team edits cannot rewrite history.
 - Timer state stores authoritative timestamps and remaining duration, never a
   per-second write. Expiration is informational and cannot reveal or close a
   round.
+- Round lifecycle normally progresses from Voting to Revealed and then
+  Finalized, with cancellation allowed from Voting or Revealed. The sole
+  backward transition is `Revealed -> Voting` in the host-authorized
+  `undo-reveal` command context; Finalized and Cancelled are terminal.
+- Participant connection updates are typed intent commands scoped by both the
+  root `openSessionId` and a Lobby/Active session status. End clears local and
+  cached Presence bindings; subsequent teardown callbacks cannot rewrite the
+  captured participant history.
 
 ## Schema versions
 

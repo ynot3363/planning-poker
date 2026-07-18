@@ -27,10 +27,11 @@ import {
   applyStoryEdit,
   applyStoryImport,
   applyTeamEdit,
+  applyVotingParticipantConnection,
   applyVotingSessionStart
 } from './intentCommands';
 import type { IntentDocumentRoot } from './intentCommands';
-import type { IntentCommandResult } from './teamRepository';
+import type { IntentCommandResult, VotingParticipantConnectionResult } from './teamRepository';
 
 const treeConfiguration = new TreeViewConfiguration({
   schema: PlanningPokerDocumentRootSchema,
@@ -343,6 +344,65 @@ describe('intent commands with independent Fluid clients', () => {
       participants: [expect.objectContaining({ id: 'participant-concurrent' })]
     });
 
+    Tree.runTransaction(first.view, (root) => {
+      const document = root as unknown as IntentDocumentRoot;
+      const session = document.sessions.find((candidate) => candidate.id === lobby.id) as
+        | (VotingSession & {
+            status: VotingSession['status'];
+            activeRoundId?: string;
+            endedAt?: string;
+            endedBy?: UserReference;
+          })
+        | undefined;
+      if (session === undefined) {
+        throw new Error('Expected the Active session before concurrent end.');
+      }
+      session.status = 'Ended';
+      session.activeRoundId = undefined;
+      session.endedAt = '2026-07-16T15:00:08.000Z';
+      session.endedBy = fixtureUser;
+      document.openSessionId = undefined;
+    });
+    let departureResult: VotingParticipantConnectionResult = 'invalid-session';
+    Tree.runTransaction(second.view, (root) => {
+      departureResult = applyVotingParticipantConnection(root as unknown as IntentDocumentRoot, {
+        sessionId: lobby.id,
+        participantId: 'participant-concurrent',
+        connection: 'Disconnected',
+        timestamp: '2026-07-16T15:00:08.500Z'
+      });
+    });
+    expect(departureResult).toBe('updated');
+    reversePendingMessages(runtimeFactory);
+    runtimeFactory.processAllMessages();
+
+    const endedSnapshot = readSnapshot(first.view.root);
+    expect(readSnapshot(second.view.root)).toEqual(endedSnapshot);
+    expect(endedSnapshot.sessions[1]).toMatchObject({
+      status: 'Ended',
+      participants: [
+        expect.objectContaining({
+          id: 'participant-concurrent',
+          presence: expect.objectContaining({ connection: 'Disconnected' })
+        })
+      ]
+    });
+    [first.view, second.view].forEach((clientView) => {
+      let result: VotingParticipantConnectionResult = 'invalid-session';
+      Tree.runTransaction(clientView, (root) => {
+        result = applyVotingParticipantConnection(root as unknown as IntentDocumentRoot, {
+          sessionId: lobby.id,
+          participantId: 'participant-concurrent',
+          connection: 'Connected',
+          timestamp: '2026-07-16T15:00:09.000Z'
+        });
+      });
+      expect(result).toBe('session-ended');
+    });
+    expect(runtimeFactory.outstandingMessageCount).toBe(0);
+    expect(readSnapshot(first.view.root)).toEqual(endedSnapshot);
+    expect(readSnapshot(second.view.root)).toEqual(endedSnapshot);
+
     const summarizable = first.tree as unknown as {
       summarize(): Promise<{
         readonly summary: Parameters<typeof MockStorage.createFromSummary>[0];
@@ -370,7 +430,7 @@ describe('intent commands with independent Fluid clients', () => {
       sharedTreeFactory.attributes
     );
     const reloadView = reloadedTree.viewWith(treeConfiguration);
-    expect(readSnapshot(reloadView.root)).toEqual(firstSnapshot);
+    expect(readSnapshot(reloadView.root)).toEqual(endedSnapshot);
 
     reloadView.dispose();
     first.view.dispose();

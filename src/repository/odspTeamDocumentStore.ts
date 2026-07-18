@@ -21,7 +21,7 @@ import type {
   VotingSession
 } from '../domain/planningPokerDomain';
 import { PlanningPokerDocumentRootSchema } from '../domain/planningPokerSchema';
-import { getSchemaCompatibility } from '../domain/planningPokerValidation';
+import { canTransitionRound, getSchemaCompatibility } from '../domain/planningPokerValidation';
 import type {
   IPlanningPokerStorageConfiguration,
   ISharePointTransport
@@ -41,6 +41,7 @@ import {
   applyStoryTransition,
   applyTeamActive,
   applyTeamEdit,
+  applyVotingParticipantConnection,
   applyVotingSessionStart
 } from './intentCommands';
 import type { IntentDocumentRoot } from './intentCommands';
@@ -541,29 +542,42 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
             .map((participant) => participant.id)
       });
     };
+    const teardownSessionPresence = (
+      sessionId?: string,
+      shouldCancelPendingReconciliation: boolean = sessionId === undefined
+    ): void => {
+      if (sessionId === undefined || participantPresence.local.sessionId === sessionId) {
+        participantPresence.local = { sessionId: '', participantId: '', mode: 'None' };
+      }
+      participantBindings.forEach((binding, attendee) => {
+        if (sessionId === undefined || binding.sessionId === sessionId) {
+          participantBindings.delete(attendee);
+        }
+      });
+      if (presenceReconcileTimeoutId !== undefined && shouldCancelPendingReconciliation) {
+        window.clearTimeout(presenceReconcileTimeoutId);
+        presenceReconcileTimeoutId = undefined;
+      }
+    };
     const setParticipantConnection = (
       sessionId: string,
       participantId: string,
       connection: 'Connected' | 'Disconnected',
       timestamp: string
-    ): void => {
+    ): import('./teamRepository').VotingParticipantConnectionResult => {
+      let result: import('./teamRepository').VotingParticipantConnectionResult = 'invalid-session';
       Tree.runTransaction(view, (root) => {
-        const document = root as unknown as IMutableDocumentRoot;
-        const sessionNode = document.sessions.find((session) => session.id === sessionId);
-        const participant = sessionNode?.participants.find(
-          (candidate) => candidate.id === participantId
-        );
-        if (participant === undefined) {
-          return;
+        result = applyVotingParticipantConnection(root as unknown as IntentDocumentRoot, {
+          sessionId,
+          participantId,
+          connection,
+          timestamp
+        });
+        if (result === 'updated') {
+          reconcileWithPresence(root as unknown as PlanningPokerDocumentRoot);
         }
-        const presence = participant.presence as IMutableParticipantPresence;
-        if (presence.connection === connection) {
-          return;
-        }
-        presence.connection = connection;
-        presence.lastSeenAt = timestamp;
-        reconcileWithPresence(root as unknown as PlanningPokerDocumentRoot);
       });
+      return result;
     };
     const removeAnonymousPresenceParticipant = (
       binding: IParticipantPresenceBinding,
@@ -602,15 +616,18 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
         document.updatedAt = timestamp;
       });
     };
-    const handlePresenceConnected = (binding: IParticipantPresenceBinding): void => {
+    const handlePresenceConnected = (
+      binding: IParticipantPresenceBinding
+    ): import('./teamRepository').VotingParticipantConnectionResult | undefined => {
       if (binding.mode !== 'None') {
-        setParticipantConnection(
+        return setParticipantConnection(
           binding.sessionId,
           binding.participantId,
           'Connected',
           new Date().toISOString()
         );
       }
+      return undefined;
     };
     const reconcileParticipantPresence = (): void => {
       const connectedBindings = new Set<string>();
@@ -752,6 +769,13 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
       } finally {
         isReconcilingCollaborativeState = false;
       }
+      const snapshot = this.readSnapshot(untypedView);
+      if (
+        participantPresence.local.mode !== 'None' &&
+        participantPresence.local.sessionId !== snapshot.openSessionId
+      ) {
+        teardownSessionPresence(participantPresence.local.sessionId, true);
+      }
     };
     const scheduleCollaborativeReconciliation = (): void => {
       if (collaborationReconcileTimeoutId !== undefined || isDisposed) {
@@ -858,6 +882,7 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
           const sessionNode = document.sessions.find(
             (candidate) =>
               candidate.id === sessionId &&
+              candidate.id === document.openSessionId &&
               (candidate.status === 'Lobby' || candidate.status === 'Active')
           );
           if (sessionNode === undefined) {
@@ -1202,7 +1227,7 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
           if (
             round === undefined ||
             round.id !== sessionNode.activeRoundId ||
-            round.status !== 'Revealed'
+            !canTransitionRound(round.status, 'Voting', 'undo-reveal')
           ) {
             result = 'invalid-round';
             return;
@@ -1384,12 +1409,14 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
       },
       endVotingSession: (sessionId, currentUser, timestamp) => {
         let result: import('./teamRepository').VotingEndResult = 'invalid-session';
+        let shouldTeardownPresence = false;
         let didEnd = false;
         Tree.runTransaction(view, (root) => {
           const document = root as unknown as IMutableDocumentRoot;
           const sessionNode = document.sessions.find((candidate) => candidate.id === sessionId);
           if (sessionNode?.status === 'Ended') {
             result = 'already-ended';
+            shouldTeardownPresence = true;
             return;
           }
           if (
@@ -1425,10 +1452,11 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
           document.openSessionId = undefined;
           document.updatedAt = timestamp;
           result = 'ended';
+          shouldTeardownPresence = true;
           didEnd = true;
         });
-        if (didEnd) {
-          participantPresence.local = { sessionId: '', participantId: '', mode: 'None' };
+        if (shouldTeardownPresence) {
+          teardownSessionPresence(sessionId, didEnd);
         }
         return result;
       },
@@ -1446,8 +1474,12 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
             const binding = update.value();
             if (binding !== undefined) {
               participantBindings.set(update.attendee, binding);
-              handlePresenceConnected(binding);
-              schedulePresenceReconciliation();
+              const result = handlePresenceConnected(binding);
+              if (result === 'session-ended') {
+                participantBindings.delete(update.attendee);
+              } else {
+                schedulePresenceReconciliation();
+              }
             }
           }
         );
@@ -1472,9 +1504,7 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
       dispose: () => {
         if (!isDisposed) {
           isDisposed = true;
-          if (presenceReconcileTimeoutId !== undefined) {
-            window.clearTimeout(presenceReconcileTimeoutId);
-          }
+          teardownSessionPresence();
           if (collaborationReconcileTimeoutId !== undefined) {
             window.clearTimeout(collaborationReconcileTimeoutId);
           }

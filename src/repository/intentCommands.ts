@@ -1,6 +1,7 @@
 import type {
   PlanningPokerTeam,
   PointingStory,
+  SessionParticipant,
   StoryVotingRound,
   UserReference,
   VotingSession
@@ -14,7 +15,9 @@ import type {
   StoryImportCommand,
   StoryTransitionCommand,
   TeamActiveCommand,
-  TeamEditCommand
+  TeamEditCommand,
+  VotingParticipantConnectionCommand,
+  VotingParticipantConnectionResult
 } from './teamRepository';
 
 /** Mutable subset of the SharedTree root owned by focused intent commands. */
@@ -53,6 +56,52 @@ interface IMutableVotingSession {
   status: VotingSession['status'];
   updatedAt: string;
   updatedBy?: UserReference;
+}
+
+interface IMutableParticipantPresence {
+  connection: SessionParticipant['presence']['connection'];
+  lastSeenAt: string;
+}
+
+/**
+ * Applies one technical Presence observation only to the authoritative open session.
+ *
+ * @remarks
+ * Ended history is rejected inside the transaction-owned command boundary. Callers may safely
+ * retry disconnect, reconnect, visibility, and teardown observations without rewriting history.
+ *
+ * @param document - Current mutable SharedTree root.
+ * @param command - Session, participant, connection, and observation timestamp.
+ * @returns Whether live Presence changed or immutable/stale state rejected the observation.
+ */
+export function applyVotingParticipantConnection(
+  document: IntentDocumentRoot,
+  command: VotingParticipantConnectionCommand
+): VotingParticipantConnectionResult {
+  const session = document.sessions.find((candidate) => candidate.id === command.sessionId);
+  if (session?.status === 'Ended') {
+    return 'session-ended';
+  }
+  if (
+    session === undefined ||
+    session.id !== document.openSessionId ||
+    (session.status !== 'Lobby' && session.status !== 'Active')
+  ) {
+    return 'invalid-session';
+  }
+  const participant = session.participants.find(
+    (candidate) => candidate.id === command.participantId
+  );
+  if (participant === undefined) {
+    return 'invalid-session';
+  }
+  if (participant.presence.connection === command.connection) {
+    return 'unchanged';
+  }
+  const presence = participant.presence as IMutableParticipantPresence;
+  presence.connection = command.connection;
+  presence.lastSeenAt = command.timestamp;
+  return 'updated';
 }
 
 /**

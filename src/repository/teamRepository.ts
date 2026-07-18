@@ -135,6 +135,25 @@ export type VotingFinalizeResult =
 /** Expected outcomes from ending an open voting session. */
 export type VotingEndResult = 'ended' | 'already-ended' | 'invalid-session' | 'host-required';
 
+/** Expected outcomes from updating one participant's synchronized connection state. */
+export type VotingParticipantConnectionResult =
+  | 'updated'
+  | 'unchanged'
+  | 'invalid-session'
+  | 'session-ended';
+
+/** Updates one participant's technical connection state in the authoritative open session. */
+export interface VotingParticipantConnectionCommand {
+  /** Open Lobby or Active session expected by the Presence observation. */
+  readonly sessionId: string;
+  /** Durable participant whose technical connection state changed. */
+  readonly participantId: string;
+  /** Current collaboration connection state. */
+  readonly connection: 'Connected' | 'Disconnected';
+  /** ISO timestamp attached to the accepted Presence observation. */
+  readonly timestamp: string;
+}
+
 /** Stable vote intent persisted for retry and deterministic concurrent-value resolution. */
 export interface VotingVoteCommand extends VoteRecord {
   /** Opaque ID reused when this exact vote intent is retried. */
@@ -340,14 +359,14 @@ export interface TeamDocumentHandle {
    * @param participantId - Durable session participant identifier.
    * @param connection - Current collaboration connection state.
    * @param timestamp - ISO presence observation timestamp.
-   * @returns `void` after the local transaction is applied.
+   * @returns Whether the open-session participant changed or history rejected the update.
    */
   setVotingParticipantConnection(
     sessionId: string,
     participantId: string,
     connection: 'Connected' | 'Disconnected',
     timestamp: string
-  ): void;
+  ): VotingParticipantConnectionResult;
   /** @returns A promise that resolves only after Fluid acknowledges the pending mutation. */
   waitForSaved(): Promise<void>;
   /**

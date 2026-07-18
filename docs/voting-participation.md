@@ -66,6 +66,16 @@ provide network-level anonymity from Microsoft 365, SharePoint, tenant
 administrators, or service telemetry involved in loading the web part and Fluid
 document.
 
+## Session teardown
+
+Ending a session clears the current client's published Presence binding and
+cached attendee bindings before save acknowledgement. Connection updates are
+accepted only for the session named by the authoritative root pointer while it
+is Lobby or Active. Late disconnect/reconnect, page visibility, navigation, and
+disposal callbacks cannot alter Named connection history or remove Anonymous
+participants from an Ended session. Repeated cleanup remains idempotent and
+does not dirty the Fluid document.
+
 ## Presentation examples
 
 - Named roster: `Alex Morgan — Voted · Connected`.

@@ -545,6 +545,24 @@ function createHarness(
       return 'ended';
     }),
     setVotingParticipantConnection: jest.fn((sessionId, participantId, connection, timestamp) => {
+      const session = document.sessions.find((candidate) => candidate.id === sessionId);
+      if (session?.status === 'Ended') {
+        return 'session-ended';
+      }
+      if (
+        session === undefined ||
+        session.id !== document.openSessionId ||
+        (session.status !== 'Lobby' && session.status !== 'Active')
+      ) {
+        return 'invalid-session';
+      }
+      const participant = session.participants.find((candidate) => candidate.id === participantId);
+      if (participant === undefined) {
+        return 'invalid-session';
+      }
+      if (participant.presence.connection === connection) {
+        return 'unchanged';
+      }
       document = {
         ...document,
         sessions: document.sessions.map((session) =>
@@ -560,6 +578,7 @@ function createHarness(
             : session
         )
       };
+      return 'updated';
     }),
     waitForSaved: jest.fn(async () => undefined),
     subscribe: (listener) => {
@@ -1049,6 +1068,23 @@ describe('VotingSessionService', () => {
     await expect(
       harness.service.joinSession(summary.teamId, prepared.getSession().id)
     ).resolves.toMatchObject({ isHost: true, participantId: undefined });
+    const endedSnapshot = JSON.parse(
+      JSON.stringify(harness.getDocument())
+    ) as PlanningPokerDocumentRoot;
+    harness.service.markDisconnected(host);
+    expect(
+      harness.handle.setVotingParticipantConnection(
+        prepared.getSession().id,
+        host.participantId as string,
+        'Connected',
+        '2026-07-11T12:31:00.000Z'
+      )
+    ).toBe('session-ended');
+    harness.service.closeSession(host);
+    harness.service.closeSession(host);
+    await Promise.resolve();
+    expect(harness.getDocument()).toEqual(endedSnapshot);
+    expect(harness.handle.dispose).toHaveBeenCalledTimes(1);
   });
 
   it('rejects invalid scale values, stale rounds, and replacement after any vote', async () => {

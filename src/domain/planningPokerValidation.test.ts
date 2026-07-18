@@ -1,6 +1,6 @@
 import { anonymousParticipantFixture, fixtureDocument, fixtureUser } from './planningPokerFixtures';
 import { isAnonymousParticipant, isOpenSession, isUnfinishedRound } from './planningPokerDomain';
-import type { TeamSettings, VotingSession } from './planningPokerDomain';
+import type { TeamSettings, VotingRoundStatus, VotingSession } from './planningPokerDomain';
 import {
   canTransitionRound,
   canTransitionSession,
@@ -39,7 +39,35 @@ describe('Planning Poker domain validation', () => {
     expect(canTransitionSession('Lobby', 'Active')).toBe(true);
     expect(canTransitionSession('Ended', 'Active')).toBe(false);
     expect(canTransitionRound('Voting', 'Revealed')).toBe(true);
+    expect(canTransitionRound('Revealed', 'Voting')).toBe(false);
+    expect(canTransitionRound('Revealed', 'Voting', 'undo-reveal')).toBe(true);
     expect(canTransitionRound('Finalized', 'Voting')).toBe(false);
+    expect(canTransitionRound('Finalized', 'Voting', 'undo-reveal')).toBe(false);
+    expect(canTransitionRound('Cancelled', 'Voting', 'undo-reveal')).toBe(false);
+  });
+
+  it('allows only documented standard and Undo reveal round transitions', () => {
+    const statuses: readonly VotingRoundStatus[] = ['Voting', 'Revealed', 'Finalized', 'Cancelled'];
+    const allowedStandard = new Set([
+      'Voting:Voting',
+      'Voting:Revealed',
+      'Voting:Cancelled',
+      'Revealed:Revealed',
+      'Revealed:Finalized',
+      'Revealed:Cancelled',
+      'Finalized:Finalized',
+      'Cancelled:Cancelled'
+    ]);
+
+    statuses.forEach((from) => {
+      statuses.forEach((to) => {
+        const transition = `${from}:${to}`;
+        expect(canTransitionRound(from, to)).toBe(allowedStandard.has(transition));
+        expect(canTransitionRound(from, to, 'undo-reveal')).toBe(
+          allowedStandard.has(transition) || transition === 'Revealed:Voting'
+        );
+      });
+    });
   });
 
   it('accepts a valid document and rejects multiple open sessions', () => {

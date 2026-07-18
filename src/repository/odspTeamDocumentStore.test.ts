@@ -3,6 +3,11 @@ const mockGetContainer = jest.fn();
 const mockPresenceListeners = new Map<string, (value: unknown) => void>();
 const mockPresenceBindings = new Map<object, unknown>();
 const mockPresenceAttendees = new Set<object>();
+let mockLocalPresenceBinding: {
+  sessionId: string;
+  participantId: string;
+  mode: 'Named' | 'Anonymous' | 'None';
+} = { sessionId: '', participantId: '', mode: 'None' };
 jest.mock('@fluidframework/odsp-client/beta', () => ({
   OdspClient: class OdspClient {
     public createContainer(...args: unknown[]): Promise<unknown> {
@@ -29,7 +34,12 @@ jest.mock('fluid-framework', () => ({
       getWorkspace: jest.fn(() => ({
         states: {
           participant: {
-            local: { sessionId: '', participantId: '', mode: 'None' },
+            get local(): typeof mockLocalPresenceBinding {
+              return mockLocalPresenceBinding;
+            },
+            set local(value: typeof mockLocalPresenceBinding) {
+              mockLocalPresenceBinding = value;
+            },
             events: {
               on: jest.fn((eventName: string, listener: (value: unknown) => void) => {
                 mockPresenceListeners.set(eventName, listener);
@@ -51,6 +61,7 @@ import { SchemaFactory, Tree, TreeViewConfiguration } from '@fluidframework/tree
 import { createIndependentTreeBeta } from '@fluidframework/tree/beta';
 import { fixtureDocument, fixtureUser } from '../domain/planningPokerFixtures';
 import type { PlanningPokerDocumentRoot, VotingSession } from '../domain/planningPokerDomain';
+import { validateDocumentInvariants } from '../domain/planningPokerValidation';
 import type {
   IPlanningPokerStorageConfiguration,
   ISharePointTransport
@@ -234,6 +245,7 @@ describe('OdspTeamDocumentStore', () => {
     mockPresenceListeners.clear();
     mockPresenceBindings.clear();
     mockPresenceAttendees.clear();
+    mockLocalPresenceBinding = { sessionId: '', participantId: '', mode: 'None' };
   });
   it('uses separate SharePoint and push-channel token audiences', async () => {
     const getToken = jest.fn(async () => 'aad-token');
@@ -425,6 +437,53 @@ describe('OdspTeamDocumentStore', () => {
         fixtureDocument.updatedAt
       )
     ).toMatchObject({ id: 'participant-2', kind: 'Named' });
+    expect(
+      handle.setVotingParticipantConnection(
+        lobby.id,
+        'participant-2',
+        'Disconnected',
+        '2026-07-10T00:00:10.000Z'
+      )
+    ).toBe('updated');
+    expect(
+      handle.setVotingParticipantConnection(
+        lobby.id,
+        'participant-2',
+        'Disconnected',
+        '2026-07-10T00:00:11.000Z'
+      )
+    ).toBe('unchanged');
+    expect(
+      handle.setVotingParticipantConnection(
+        lobby.id,
+        'participant-2',
+        'Connected',
+        '2026-07-10T00:00:12.000Z'
+      )
+    ).toBe('updated');
+    expect(
+      handle.setVotingParticipantConnection(
+        'stale-session',
+        'participant-2',
+        'Disconnected',
+        '2026-07-10T00:00:13.000Z'
+      )
+    ).toBe('invalid-session');
+    const openLobbySnapshot = handle.getSnapshot().sessions[0];
+    setTestSessions(
+      [openLobbySnapshot, { ...openLobbySnapshot, id: 'non-open-lobby' }],
+      lobby.id,
+      fixtureDocument.updatedAt
+    );
+    expect(
+      handle.setVotingParticipantConnection(
+        'non-open-lobby',
+        'participant-2',
+        'Disconnected',
+        '2026-07-10T00:00:14.000Z'
+      )
+    ).toBe('invalid-session');
+    setTestSessions([openLobbySnapshot], lobby.id, fixtureDocument.updatedAt);
     const readyStory = {
       id: 'story-1',
       teamId: fixtureDocument.team.id,
@@ -845,6 +904,7 @@ describe('OdspTeamDocumentStore', () => {
     expect(handle.endVotingSession(lobby.id, fixtureUser, '2026-07-10T00:03:00.000Z')).toBe(
       'ended'
     );
+    expect(mockLocalPresenceBinding).toEqual({ sessionId: '', participantId: '', mode: 'None' });
     const endedSnapshot = handle.getSnapshot();
     expect(endedSnapshot.openSessionId).toBeUndefined();
     expect(endedSnapshot.sessions[0]).toMatchObject({
@@ -855,9 +915,96 @@ describe('OdspTeamDocumentStore', () => {
     expect(endedSnapshot.sessions[0].rounds).toEqual(
       expect.arrayContaining([expect.objectContaining({ id: 'round-2', status: 'Cancelled' })])
     );
+    mockLocalPresenceBinding = {
+      sessionId: lobby.id,
+      participantId: 'named-voter',
+      mode: 'Named'
+    };
     expect(handle.endVotingSession(lobby.id, fixtureUser, '2026-07-10T00:03:01.000Z')).toBe(
       'already-ended'
     );
+    expect(mockLocalPresenceBinding).toEqual({ sessionId: '', participantId: '', mode: 'None' });
+    expect(
+      handle.setVotingParticipantConnection(
+        lobby.id,
+        'named-voter',
+        'Disconnected',
+        '2026-07-10T00:03:02.000Z'
+      )
+    ).toBe('session-ended');
+    expect(
+      handle.joinVotingSession(
+        lobby.id,
+        { kind: 'Named', participantId: 'post-end', user: fixtureUser },
+        '2026-07-10T00:03:02.000Z'
+      )
+    ).toBeUndefined();
+    expect(
+      handle.castVotingVote(lobby.id, 'round-2', {
+        operationId: 'post-end-vote',
+        participantId: 'named-voter',
+        value: '5',
+        castAt: '2026-07-10T00:03:02.000Z'
+      })
+    ).toBe('invalid-session');
+    expect(
+      handle.selectVotingStory(
+        lobby.id,
+        'story-2',
+        'post-end-round',
+        fixtureUser,
+        false,
+        '2026-07-10T00:03:02.000Z'
+      )
+    ).toBe('invalid-session');
+    expect(
+      handle.finalizeVotingRound(
+        lobby.id,
+        'round-2',
+        '8',
+        fixtureUser,
+        '2026-07-10T00:03:02.500Z',
+        'post-end-correction',
+        'post-end-finalize'
+      )
+    ).toBe('invalid-session');
+    expect(
+      handle.updateVotingTimer(
+        lobby.id,
+        'round-2',
+        'start',
+        fixtureUser,
+        '2026-07-10T00:03:02.000Z'
+      )
+    ).toBe('invalid-session');
+    expect(
+      handle.revealVotingRound(lobby.id, 'round-2', fixtureUser, '2026-07-10T00:03:02.000Z')
+    ).toBe('invalid-session');
+    expect(
+      handle.undoVotingRoundReveal(lobby.id, 'round-2', fixtureUser, '2026-07-10T00:03:02.000Z')
+    ).toBe('invalid-session');
+    expect(
+      handle.finalizeVotingRound(
+        lobby.id,
+        'round-2',
+        '5',
+        fixtureUser,
+        '2026-07-10T00:03:02.000Z',
+        'post-end-finalize'
+      )
+    ).toBe('invalid-session');
+    mockPresenceBindings.set(disconnectedNamedAttendee, {
+      sessionId: lobby.id,
+      participantId: 'named-presence',
+      mode: 'Named'
+    });
+    mockPresenceListeners.get('remoteUpdated')?.({
+      attendee: disconnectedNamedAttendee,
+      value: () => mockPresenceBindings.get(disconnectedNamedAttendee)
+    });
+    mockPresenceBindings.delete(disconnectedNamedAttendee);
+    mockPresenceListeners.get('attendeeDisconnected')?.(disconnectedNamedAttendee);
+    expect(handle.getSnapshot()).toEqual(endedSnapshot);
     unsubscribePresence();
     treeOn.mockRestore();
     runTransaction.mockRestore();
@@ -1179,6 +1326,7 @@ describe('OdspTeamDocumentStore', () => {
       automaticRevealSuppressionKey: expect.any(String),
       timer: expect.objectContaining({ status: 'Stopped' })
     });
+    expect(validateDocumentInvariants(handle.getSnapshot())).toEqual([]);
     expect(
       handle.castVotingVote(session.id, 'round-2', {
         operationId: 'round-2-vote-3',
