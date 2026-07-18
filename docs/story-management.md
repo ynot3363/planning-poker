@@ -55,6 +55,15 @@ acknowledgement, and publish synchronized snapshots to other open clients.
 SharePoint metadata remains a team-discovery index and does not duplicate the
 story catalog.
 
+The mutation boundary accepts a story ID and one explicit intent rather than a
+complete catalog assembled from the screen snapshot. Create and confirmed CSV
+import append detached nodes while retaining stories added by other clients.
+Edit patches only title, description, and link after comparing the current
+story version; archive, restore, re-point, and delete recheck the live lifecycle
+and unfinished-round guard. If finalization or another edit wins first, the
+screen reports that the story changed and asks for a reload without overwriting
+status, current estimate, or immutable estimate history.
+
 ## CSV Import
 
 Select a hosted team and choose **Download template** to create an Excel-friendly

@@ -62,6 +62,13 @@ Active. Configured-member status is shown as context only; any authenticated
 user who can access the backing SharePoint library may enter through a valid
 focused link.
 
+Start voting is a focused live-session command: it finds the current open Lobby
+inside the transaction and changes only that session's status and audit fields.
+Participants who joined after the host opened the screen and all sibling ended
+session history remain intact. A stale link or replaced/ended Lobby returns a
+safe reload message instead of reporting success or replacing the session
+collection.
+
 The focused session always exposes a read-only link with a **Copy link** action.
 The button reports copied or failed state compactly; the visible link remains
 selectable when browser clipboard permissions are unavailable. Shared links

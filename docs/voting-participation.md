@@ -18,10 +18,20 @@ participant binding and performs a short delayed reconciliation against the
 connected attendee set, covering disconnect events whose remote state has
 already been removed.
 
+Every accepted Named disconnect re-evaluates automatic reveal. If the departing
+participant was the final non-voter, the round reveals once the remaining
+connected voters all have valid votes. A later reconnect or join can update the
+roster but cannot reopen a round already frozen as `Revealed` or add a vote to
+it.
+
 Configured team members and authenticated link invitees use the same join flow.
 Only people who join the session are eligible voters; configured members who do
 not join are not counted as remaining votes. A host may join as a voter without
 changing their separate host capabilities.
+
+Concurrent Named rejoins are keyed by Entra object ID. If independent clients
+insert duplicate roster entries, reconciliation keeps the smallest stable
+participant ID, remaps dependent votes to it, and removes the duplicates.
 
 ## Anonymous sessions
 
@@ -40,10 +50,31 @@ the Anonymous roster entry and its active unrevealed vote. A later reconnect
 recreates participation and may receive a new alias. The reconnect record is
 not placed in the URL or Fluid state.
 
+Anonymous removal deletes the active unrevealed vote before automatic
+eligibility is evaluated. Removing the last participant therefore leaves a
+zero-participant round in `Voting`; removing a non-voter may reveal only when at
+least one connected participant remains and all remaining participants have
+valid votes.
+
+Alias allocation is eventually deterministic under simultaneous joins.
+Reconciliation orders Anonymous participant IDs by Unicode code unit and
+assigns `Participant 1`, `Participant 2`, and so on, so every client reaches the
+same unique aliases without persisting authenticated identity.
+
 Anonymous mode is an application data and presentation contract. It does not
 provide network-level anonymity from Microsoft 365, SharePoint, tenant
 administrators, or service telemetry involved in loading the web part and Fluid
 document.
+
+## Session teardown
+
+Ending a session clears the current client's published Presence binding and
+cached attendee bindings before save acknowledgement. Connection updates are
+accepted only for the session named by the authoritative root pointer while it
+is Lobby or Active. Late disconnect/reconnect, page visibility, navigation, and
+disposal callbacks cannot alter Named connection history or remove Anonymous
+participants from an Ended session. Repeated cleanup remains idempotent and
+does not dirty the Fluid document.
 
 ## Presentation examples
 

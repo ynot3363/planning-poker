@@ -6,6 +6,13 @@ import type {
   VotingSession
 } from '../domain/planningPokerDomain';
 import type { IPlanningPokerStorageConfiguration } from '../storage/storageTypes';
+import {
+  applyStoryCreate,
+  applyStoryDelete,
+  applyStoryEdit,
+  applyStoryImport,
+  applyStoryTransition
+} from '../repository/intentCommands';
 import { TeamRepository } from '../repository/teamRepository';
 import type { ITeamDocumentStore, TeamDocumentHandle } from '../repository/teamRepository';
 import {
@@ -62,23 +69,53 @@ function createHarness(document: PlanningPokerDocumentRoot = fixtureDocument): {
   readonly handle: TeamDocumentHandle;
   getDocument(): PlanningPokerDocumentRoot;
 } {
-  let current = document;
+  const current = JSON.parse(JSON.stringify(document)) as PlanningPokerDocumentRoot;
   const listeners = new Set<() => void>();
+  const publish = (): void => listeners.forEach((listener) => listener());
   const handle: TeamDocumentHandle = {
     teamId: document.team.id,
     driveItemId: 'item-id',
     getSnapshot: () => current,
     getConnectionState: () => 'Connected',
-    updateTeam: (team) => {
-      current = { ...current, team, updatedAt: team.updatedAt };
-      listeners.forEach((listener) => listener());
-    },
-    updateStories: jest.fn((stories, updatedAt) => {
-      current = { ...current, stories, updatedAt };
-      listeners.forEach((listener) => listener());
+    editTeam: jest.fn(() => ({ status: 'applied' })),
+    setTeamActive: jest.fn(() => ({ status: 'applied' })),
+    createStory: jest.fn((command) => {
+      const result = applyStoryCreate(current, command);
+      if (result.status === 'applied') {
+        publish();
+      }
+      return result;
     }),
-    updateSessions: jest.fn(),
+    importStories: jest.fn((command) => {
+      const result = applyStoryImport(current, command);
+      if (result.status === 'applied') {
+        publish();
+      }
+      return result;
+    }),
+    editStory: jest.fn((command) => {
+      const result = applyStoryEdit(current, command);
+      if (result.status === 'applied') {
+        publish();
+      }
+      return result;
+    }),
+    transitionStory: jest.fn((command) => {
+      const result = applyStoryTransition(current, command);
+      if (result.status === 'applied') {
+        publish();
+      }
+      return result;
+    }),
+    deleteStory: jest.fn((command) => {
+      const result = applyStoryDelete(current, command);
+      if (result.status === 'applied') {
+        publish();
+      }
+      return result;
+    }),
     prepareVotingSession: jest.fn((session) => session.id),
+    startVotingSession: jest.fn(() => ({ status: 'applied' })),
     joinVotingSession: jest.fn(() => undefined),
     selectVotingStory: jest.fn(() => 'invalid-session'),
     castVotingVote: jest.fn(() => 'invalid-session'),
@@ -224,11 +261,10 @@ describe('story management', () => {
     });
 
     expect(harness.getDocument().stories).toEqual([readyStory]);
-    expect(session.handle.updateStories).toHaveBeenCalledTimes(1);
+    expect(session.handle.deleteStory).toHaveBeenCalledTimes(1);
     expect(session.handle.waitForSaved).toHaveBeenCalledTimes(1);
-    await expect(harness.service.deleteStory(session, 'missing-story')).resolves.toMatchObject({
-      isSaved: false,
-      code: 'not-found'
+    await expect(harness.service.deleteStory(session, 'missing-story')).resolves.toEqual({
+      isSaved: true
     });
   });
 
@@ -319,7 +355,7 @@ describe('story management', () => {
       ])
     ).resolves.toEqual({ isSaved: true });
 
-    expect(session.handle.updateStories).toHaveBeenCalledTimes(1);
+    expect(session.handle.importStories).toHaveBeenCalledTimes(1);
     expect(session.handle.waitForSaved).toHaveBeenCalledTimes(1);
     expect(harness.store.updateMetadata).toHaveBeenCalledTimes(1);
     expect(harness.getDocument().stories).toEqual([
@@ -346,7 +382,7 @@ describe('story management', () => {
         { title: '', description: '', link: '' }
       ])
     ).resolves.toMatchObject({ isSaved: false });
-    expect(invalidSession.handle.updateStories).not.toHaveBeenCalled();
+    expect(invalidSession.handle.importStories).not.toHaveBeenCalled();
 
     const failingHarness = createHarness();
     const failingService = new StoryManagementService(
@@ -361,13 +397,13 @@ describe('story management', () => {
     await expect(
       failingService.importStories(failingSession, [{ title: 'Valid', description: '', link: '' }])
     ).resolves.toMatchObject({ isSaved: false });
-    expect(failingSession.handle.updateStories).not.toHaveBeenCalled();
+    expect(failingSession.handle.importStories).not.toHaveBeenCalled();
 
     const mutationHarness = createHarness();
     const mutationSession = await mutationHarness.service.openTeam(
       (await mutationHarness.service.listTeams())[0]
     );
-    (mutationSession.handle.updateStories as jest.Mock).mockImplementation(() => {
+    (mutationSession.handle.importStories as jest.Mock).mockImplementation(() => {
       throw new Error('transaction failed');
     });
     await expect(

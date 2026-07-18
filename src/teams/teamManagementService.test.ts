@@ -24,15 +24,42 @@ function createHandle(): TeamDocumentHandle {
     driveItemId: 'item-id',
     getSnapshot: () => snapshot,
     getConnectionState: () => 'Connected',
-    updateTeam: (team) => {
-      snapshot = { ...snapshot, team, updatedAt: team.updatedAt };
+    editTeam: (command) => {
+      snapshot = {
+        ...snapshot,
+        team: {
+          ...snapshot.team,
+          title: command.title ?? snapshot.team.title,
+          description: command.description ?? snapshot.team.description,
+          isActive: command.isActive ?? snapshot.team.isActive,
+          hosts: command.hosts ?? snapshot.team.hosts,
+          configuredMembers: command.configuredMembers ?? snapshot.team.configuredMembers,
+          settings: command.settings ?? snapshot.team.settings,
+          updatedAt: command.updatedAt,
+          updatedBy: command.currentUser
+        },
+        updatedAt: command.updatedAt
+      };
+      return { status: 'applied' };
     },
-    updateStories: (stories, updatedAt) => {
-      snapshot = { ...snapshot, stories, updatedAt };
+    setTeamActive: (command) => {
+      snapshot = {
+        ...snapshot,
+        team: {
+          ...snapshot.team,
+          isActive: command.isActive,
+          updatedAt: command.updatedAt,
+          updatedBy: command.currentUser
+        },
+        updatedAt: command.updatedAt
+      };
+      return { status: 'applied' };
     },
-    updateSessions: (sessions, openSessionId, updatedAt) => {
-      snapshot = { ...snapshot, sessions, openSessionId, updatedAt };
-    },
+    createStory: () => ({ status: 'applied' }),
+    importStories: () => ({ status: 'applied' }),
+    editStory: () => ({ status: 'applied' }),
+    transitionStory: () => ({ status: 'applied' }),
+    deleteStory: () => ({ status: 'applied' }),
     prepareVotingSession: (session, updatedAt) => {
       snapshot = {
         ...snapshot,
@@ -42,6 +69,7 @@ function createHandle(): TeamDocumentHandle {
       };
       return session.id;
     },
+    startVotingSession: () => ({ status: 'applied' }),
     joinVotingSession: () => undefined,
     selectVotingStory: () => 'invalid-session',
     castVotingVote: () => 'invalid-session',

@@ -5,6 +5,7 @@ import type {
   UserReference
 } from '../domain/planningPokerDomain';
 import type { IPlanningPokerStorageConfiguration } from '../storage/storageTypes';
+import { applyVotingSessionStart } from '../repository/intentCommands';
 import { TeamRepository } from '../repository/teamRepository';
 import type {
   HostedTeamSummary,
@@ -48,20 +49,22 @@ function createHarness(
   readonly handle: TeamDocumentHandle;
   readonly store: ITeamDocumentStore;
   getDocument(): PlanningPokerDocumentRoot;
+  setDocument(document: PlanningPokerDocumentRoot): void;
 } {
-  let document = initial;
+  let document = JSON.parse(JSON.stringify(initial)) as PlanningPokerDocumentRoot;
   const listeners = new Set<() => void>();
   const handle: TeamDocumentHandle = {
     teamId: document.team.id,
     driveItemId: summary.driveItemId,
     getSnapshot: () => document,
     getConnectionState: () => 'Connected',
-    updateTeam: jest.fn(),
-    updateStories: jest.fn(),
-    updateSessions: jest.fn((sessions, openSessionId, updatedAt) => {
-      document = { ...document, sessions, openSessionId, updatedAt };
-      listeners.forEach((listener) => listener());
-    }),
+    editTeam: jest.fn(() => ({ status: 'applied' })),
+    setTeamActive: jest.fn(() => ({ status: 'applied' })),
+    createStory: jest.fn(() => ({ status: 'applied' })),
+    importStories: jest.fn(() => ({ status: 'applied' })),
+    editStory: jest.fn(() => ({ status: 'applied' })),
+    transitionStory: jest.fn(() => ({ status: 'applied' })),
+    deleteStory: jest.fn(() => ({ status: 'applied' })),
     prepareVotingSession: jest.fn((candidate, updatedAt) => {
       const existing = document.sessions.find(
         (current) =>
@@ -79,6 +82,13 @@ function createHarness(
       };
       listeners.forEach((listener) => listener());
       return candidate.id;
+    }),
+    startVotingSession: jest.fn((sessionId, currentUser, updatedAt) => {
+      const result = applyVotingSessionStart(document, sessionId, currentUser, updatedAt);
+      if (result.status === 'applied') {
+        listeners.forEach((listener) => listener());
+      }
+      return result;
     }),
     joinVotingSession: jest.fn((sessionId, join, timestamp) => {
       const session = document.sessions.find((candidate) => candidate.id === sessionId);
@@ -351,18 +361,87 @@ function createHarness(
       listeners.forEach((listener) => listener());
       return 'reopened';
     }),
-    finalizeVotingRound: jest.fn((sessionId, roundId, scaleValue, currentUser, timestamp) => {
-      const session = document.sessions.find((candidate) => candidate.id === sessionId);
-      if (session === undefined || session.status !== 'Active') return 'invalid-session';
-      if (!document.team.hosts.some((host) => host.objectId === currentUser.objectId)) {
-        return 'host-required';
-      }
-      const round = session.rounds.find((candidate) => candidate.id === roundId);
-      if (round?.status === 'Finalized') {
-        if (round.assignedValue === scaleValue) return 'already-finalized';
+    finalizeVotingRound: jest.fn(
+      (
+        sessionId,
+        roundId,
+        scaleValue,
+        currentUser,
+        timestamp,
+        operationId,
+        supersedesOperationId
+      ) => {
+        const session = document.sessions.find((candidate) => candidate.id === sessionId);
+        if (session === undefined || session.status !== 'Active') return 'invalid-session';
+        if (!document.team.hosts.some((host) => host.objectId === currentUser.objectId)) {
+          return 'host-required';
+        }
+        const round = session.rounds.find((candidate) => candidate.id === roundId);
+        if (round?.status === 'Finalized') {
+          if (round.assignedValue === scaleValue) return 'already-finalized';
+          if (session.settings.scaleValues.indexOf(scaleValue) < 0) return 'invalid-estimate';
+          const story = document.stories.find(
+            (candidate) => candidate.id === round.storyId && candidate.status === 'Pointed'
+          );
+          if (story === undefined) return 'invalid-story';
+          document = {
+            ...document,
+            stories: document.stories.map((candidate) =>
+              candidate.id === story.id
+                ? {
+                    ...candidate,
+                    currentEstimate: scaleValue,
+                    estimateHistory: [
+                      ...candidate.estimateHistory,
+                      {
+                        operationId,
+                        ...(supersedesOperationId === undefined ? {} : { supersedesOperationId }),
+                        sessionId,
+                        roundId,
+                        value: scaleValue,
+                        finalizedAt: timestamp,
+                        finalizedBy: currentUser
+                      }
+                    ],
+                    updatedAt: timestamp,
+                    updatedBy: currentUser
+                  }
+                : candidate
+            ),
+            sessions: document.sessions.map((candidate) =>
+              candidate.id === sessionId
+                ? {
+                    ...candidate,
+                    rounds: candidate.rounds.map((item) =>
+                      item.id === roundId
+                        ? {
+                            ...item,
+                            assignedValue: scaleValue,
+                            finalizedAt: timestamp,
+                            finalizedBy: currentUser,
+                            finalizationOperationId: operationId
+                          }
+                        : item
+                    ),
+                    updatedAt: timestamp
+                  }
+                : candidate
+            ),
+            updatedAt: timestamp
+          };
+          listeners.forEach((listener) => listener());
+          return 'finalized';
+        }
+        if (
+          round === undefined ||
+          session.activeRoundId !== roundId ||
+          round.status !== 'Revealed'
+        ) {
+          return 'invalid-round';
+        }
         if (session.settings.scaleValues.indexOf(scaleValue) < 0) return 'invalid-estimate';
         const story = document.stories.find(
-          (candidate) => candidate.id === round.storyId && candidate.status === 'Pointed'
+          (candidate) => candidate.id === round.storyId && candidate.status === 'Ready'
         );
         if (story === undefined) return 'invalid-story';
         document = {
@@ -371,10 +450,12 @@ function createHarness(
             candidate.id === story.id
               ? {
                   ...candidate,
+                  status: 'Pointed',
                   currentEstimate: scaleValue,
                   estimateHistory: [
                     ...candidate.estimateHistory,
                     {
+                      operationId,
                       sessionId,
                       roundId,
                       value: scaleValue,
@@ -395,12 +476,16 @@ function createHarness(
                     item.id === roundId
                       ? {
                           ...item,
+                          status: 'Finalized',
                           assignedValue: scaleValue,
                           finalizedAt: timestamp,
-                          finalizedBy: currentUser
+                          finalizedBy: currentUser,
+                          finalizationOperationId: operationId
                         }
                       : item
                   ),
+                  activeRoundId: undefined,
+                  finalizedRoundIds: [...candidate.finalizedRoundIds, roundId],
                   updatedAt: timestamp
                 }
               : candidate
@@ -410,63 +495,7 @@ function createHarness(
         listeners.forEach((listener) => listener());
         return 'finalized';
       }
-      if (round === undefined || session.activeRoundId !== roundId || round.status !== 'Revealed') {
-        return 'invalid-round';
-      }
-      if (session.settings.scaleValues.indexOf(scaleValue) < 0) return 'invalid-estimate';
-      const story = document.stories.find(
-        (candidate) => candidate.id === round.storyId && candidate.status === 'Ready'
-      );
-      if (story === undefined) return 'invalid-story';
-      document = {
-        ...document,
-        stories: document.stories.map((candidate) =>
-          candidate.id === story.id
-            ? {
-                ...candidate,
-                status: 'Pointed',
-                currentEstimate: scaleValue,
-                estimateHistory: [
-                  ...candidate.estimateHistory,
-                  {
-                    sessionId,
-                    roundId,
-                    value: scaleValue,
-                    finalizedAt: timestamp,
-                    finalizedBy: currentUser
-                  }
-                ],
-                updatedAt: timestamp,
-                updatedBy: currentUser
-              }
-            : candidate
-        ),
-        sessions: document.sessions.map((candidate) =>
-          candidate.id === sessionId
-            ? {
-                ...candidate,
-                rounds: candidate.rounds.map((item) =>
-                  item.id === roundId
-                    ? {
-                        ...item,
-                        status: 'Finalized',
-                        assignedValue: scaleValue,
-                        finalizedAt: timestamp,
-                        finalizedBy: currentUser
-                      }
-                    : item
-                ),
-                activeRoundId: undefined,
-                finalizedRoundIds: [...candidate.finalizedRoundIds, roundId],
-                updatedAt: timestamp
-              }
-            : candidate
-        ),
-        updatedAt: timestamp
-      };
-      listeners.forEach((listener) => listener());
-      return 'finalized';
-    }),
+    ),
     endVotingSession: jest.fn((sessionId, currentUser, timestamp) => {
       const session = document.sessions.find((candidate) => candidate.id === sessionId);
       if (session?.status === 'Ended') return 'already-ended';
@@ -516,6 +545,24 @@ function createHarness(
       return 'ended';
     }),
     setVotingParticipantConnection: jest.fn((sessionId, participantId, connection, timestamp) => {
+      const session = document.sessions.find((candidate) => candidate.id === sessionId);
+      if (session?.status === 'Ended') {
+        return 'session-ended';
+      }
+      if (
+        session === undefined ||
+        session.id !== document.openSessionId ||
+        (session.status !== 'Lobby' && session.status !== 'Active')
+      ) {
+        return 'invalid-session';
+      }
+      const participant = session.participants.find((candidate) => candidate.id === participantId);
+      if (participant === undefined) {
+        return 'invalid-session';
+      }
+      if (participant.presence.connection === connection) {
+        return 'unchanged';
+      }
       document = {
         ...document,
         sessions: document.sessions.map((session) =>
@@ -531,6 +578,7 @@ function createHarness(
             : session
         )
       };
+      return 'updated';
     }),
     waitForSaved: jest.fn(async () => undefined),
     subscribe: (listener) => {
@@ -559,7 +607,10 @@ function createHarness(
     ),
     handle,
     store,
-    getDocument: () => document
+    getDocument: () => document,
+    setDocument: (nextDocument) => {
+      document = nextDocument;
+    }
   };
 }
 
@@ -590,7 +641,7 @@ describe('VotingSessionService', () => {
     const reopened = await harness.service.prepareSession(summary);
 
     expect(reopened.getSession().id).toBe(prepared.getSession().id);
-    expect(harness.handle.updateSessions).not.toHaveBeenCalled();
+    expect(harness.handle.prepareVotingSession).not.toHaveBeenCalled();
   });
 
   it('converges concurrent prepare attempts on one transactionally guarded Lobby', async () => {
@@ -704,14 +755,10 @@ describe('VotingSessionService', () => {
   it('starts voting once and treats a repeated start as idempotent', async () => {
     const harness = createHarness();
     const context = await harness.service.prepareSession(summary);
-    const updatesAfterPrepare = (harness.handle.updateSessions as jest.Mock).mock.calls.length;
-
     await expect(harness.service.startVoting(context)).resolves.toMatchObject({ status: 'Active' });
     await expect(harness.service.startVoting(context)).resolves.toMatchObject({ status: 'Active' });
 
-    expect((harness.handle.updateSessions as jest.Mock).mock.calls.length).toBe(
-      updatesAfterPrepare + 1
-    );
+    expect(harness.handle.startVotingSession).toHaveBeenCalledTimes(1);
   });
 
   it('synchronizes the Lobby-to-Active transition to another subscribed context', async () => {
@@ -730,8 +777,9 @@ describe('VotingSessionService', () => {
 
   it('lists hosted teams plus open configured-participant sessions without duplicates', async () => {
     const harness = createHarness();
-    harness.handle.updateSessions(
-      [
+    harness.setDocument({
+      ...harness.getDocument(),
+      sessions: [
         {
           id: 'ended-history',
           teamId: fixtureDocument.team.id,
@@ -746,9 +794,9 @@ describe('VotingSessionService', () => {
           updatedAt: fixtureDocument.updatedAt
         }
       ],
-      undefined,
-      fixtureDocument.updatedAt
-    );
+      openSessionId: undefined,
+      updatedAt: fixtureDocument.updatedAt
+    });
     const participantTeam: HostedTeamSummary = {
       teamId: 'participant-team',
       driveItemId: 'participant-drive',
@@ -834,6 +882,17 @@ describe('VotingSessionService', () => {
 
     await harness.service.castVote(joined, round.id, '3');
     await harness.service.castVote(joined, round.id, '5');
+    const voteCalls = jest.mocked(harness.handle.castVotingVote).mock.calls;
+    expect(voteCalls[1][2]).toMatchObject({
+      supersedesOperationId: voteCalls[0][2].operationId
+    });
+    await harness.service.castVote(joined, round.id, '5');
+    expect(jest.mocked(harness.handle.castVotingVote).mock.calls[2][2]).toEqual(
+      expect.objectContaining({ operationId: voteCalls[1][2].operationId, value: '5' })
+    );
+    expect(jest.mocked(harness.handle.castVotingVote).mock.calls[2][2]).not.toHaveProperty(
+      'supersedesOperationId'
+    );
 
     expect(joined.getSession().rounds[0].votes).toEqual([
       expect.objectContaining({ participantId: joined.participantId, value: '5' })
@@ -941,10 +1000,15 @@ describe('VotingSessionService', () => {
     await expect(harness.service.finalizeEstimate(host, roundId, '5')).rejects.toMatchObject({
       code: 'save-failure'
     });
+    const firstFinalizationOperationId = harness.getDocument().sessions[0].rounds[0]
+      .finalizationOperationId as string;
 
     await expect(harness.service.finalizeEstimate(host, roundId, '5')).resolves.toMatchObject({
       finalizedRoundIds: [roundId]
     });
+    const retryCall = jest.mocked(harness.handle.finalizeVotingRound).mock.calls[2];
+    expect(retryCall[5]).toBe(firstFinalizationOperationId);
+    expect(retryCall[6]).toBeUndefined();
     expect(harness.getDocument().stories[0]).toMatchObject({
       status: 'Pointed',
       currentEstimate: '5',
@@ -952,6 +1016,9 @@ describe('VotingSessionService', () => {
     });
     expect(harness.getDocument().stories[0].estimateHistory).toHaveLength(1);
     await harness.service.finalizeEstimate(host, roundId, '8');
+    const correctionCall = jest.mocked(harness.handle.finalizeVotingRound).mock.calls[3];
+    expect(correctionCall[5]).not.toBe(firstFinalizationOperationId);
+    expect(correctionCall[6]).toBe(firstFinalizationOperationId);
     expect(host.getSession().finalizedRoundIds).toEqual([roundId]);
     expect(harness.getDocument().stories[0]).toMatchObject({
       currentEstimate: '8',
@@ -1001,6 +1068,23 @@ describe('VotingSessionService', () => {
     await expect(
       harness.service.joinSession(summary.teamId, prepared.getSession().id)
     ).resolves.toMatchObject({ isHost: true, participantId: undefined });
+    const endedSnapshot = JSON.parse(
+      JSON.stringify(harness.getDocument())
+    ) as PlanningPokerDocumentRoot;
+    harness.service.markDisconnected(host);
+    expect(
+      harness.handle.setVotingParticipantConnection(
+        prepared.getSession().id,
+        host.participantId as string,
+        'Connected',
+        '2026-07-11T12:31:00.000Z'
+      )
+    ).toBe('session-ended');
+    harness.service.closeSession(host);
+    harness.service.closeSession(host);
+    await Promise.resolve();
+    expect(harness.getDocument()).toEqual(endedSnapshot);
+    expect(harness.handle.dispose).toHaveBeenCalledTimes(1);
   });
 
   it('rejects invalid scale values, stale rounds, and replacement after any vote', async () => {

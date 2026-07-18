@@ -241,6 +241,80 @@ Recommended UI pattern:
 
 This keeps React components simpler and makes export/debug behavior much easier.
 
+### Command and Read-Model Separation
+
+Plain snapshots returned by a team document handle are presentation read models.
+They must never be edited into a complete replacement for `team`, `stories`, or
+`sessions`. The public handle exposes intent-specific commands instead: a team
+form edit or activity toggle, one story create/edit/transition/delete, one
+atomic import batch, and the Lobby-to-Active transition.
+
+Each command receives stable entity IDs, the minimum validated values, and any
+observed version needed for conflict detection. Its synchronous SharedTree
+transaction locates the current hydrated node, rechecks host, lifecycle,
+open-round, and immutable-history rules, then patches only fields owned by that
+action. Story creates and imports append detached schema values through the
+sequence insertion API; they never spread hydrated nodes into a replacement
+array.
+
+Commands return a discriminated `applied`, `idempotent`, `conflict`, `stale`, or
+`rejected` result. Services translate failures into non-sensitive recovery
+guidance and wait for Fluid save acknowledgement before refreshing SharePoint
+metadata. For example, an edit created from an older story `updatedAt` returns a
+conflict if finalization changed that story in the meantime; it cannot restore
+the older status, estimate, or history. A repeated create with the same stable
+ID and creation fields is idempotent, while a different entity using that ID is
+a conflict.
+
+### Deterministic Collaboration Reconciliation
+
+SharedTree guarantees operation convergence, but it does not by itself enforce
+application uniqueness such as one open session, one unfinished round, or one
+vote slot. Planning Poker therefore reconciles the converged document after
+tree changes and once during load. Reconciliation is synchronous, idempotent,
+and based only on persisted stable IDs and causal links; wall-clock timestamps,
+arrival order, and client locale never select a winner.
+
+The deterministic rules are:
+
+- the smallest opaque entity ID by Unicode code-unit order wins simultaneous
+  open-session or unfinished-round creation;
+- a Named participant is keyed by Entra object ID, and the smallest participant
+  ID wins duplicate joins;
+- Anonymous aliases are reassigned in participant-ID order, preserving the
+  non-identifying `Participant N` contract after concurrent joins;
+- votes and estimate assignments carry a stable `operationId`; a later intent
+  names its observed parent in `supersedesOperationId`, and the smallest
+  operation ID wins only when concurrent causal tips are siblings; and
+- `openSessionId`, `activeRoundId`, and `finalizedRoundIds` are repaired
+  projections of canonical entity state rather than independent sources of
+  truth.
+
+A retried command must reuse its operation ID. Replayed vote and finalization
+commands are idempotent and do not duplicate a vote slot, estimate-history
+entry, or finalized-round index. A distinct correction receives a new operation
+ID and supersedes the prior canonical assignment so the audit history remains
+available. The repository may return an idempotent or reconciled-conflict
+result; services show recovery guidance and refresh from the canonical read
+model rather than treating a locally accepted write as globally authoritative.
+
+Automatic reveal is another idempotent reconciliation projection. One typed
+eligibility command rechecks the authoritative open Active session, current
+Voting round, live connected participant IDs, canonical vote slots, and the
+session scale. It runs after accepted votes, Named disconnects, Anonymous
+removal, Presence roster reconciliation, and converged tree changes. At least
+one connected participant must remain and every connected participant must
+have a valid in-scale vote. Automatic audit fields derive from the same stable
+canonical vote on every client and do not identify the client or person that
+ran reconciliation. Repeated attempts return already-revealed or not-eligible
+without another mutation.
+
+This is an application-level last-writer rule based on causal intent, not time:
+an observed child supersedes its parent, while simultaneous siblings use the
+stable-ID tie-break. Multi-client tests must delay and reorder operations, run
+reconciliation from independent containers, and verify the same state after a
+summary reload.
+
 ### Planning Poker Round Mutations
 
 Active-story selection and vote upserts must use document-store transaction
@@ -248,7 +322,8 @@ commands rather than replacing a session assembled from a stale UI snapshot.
 The transaction rechecks the open Active session, current round, participant or
 host authority, story lifecycle, and immutable session scale before mutation.
 Round selection captures story content and updates `activeRoundId` atomically;
-votes are keyed by participant ID so changing a selection replaces one record.
+votes are keyed by participant ID and use stable operation identities so a
+changed selection causally supersedes the prior canonical record.
 
 React must use privacy-shaped selectors before reveal: the current participant
 may see their own value, Named mode may show voted/not-voted state, and
@@ -266,6 +341,12 @@ estimate appends history without duplicating the finalized-round index. Refresh
 SharePoint discovery metadata after the Fluid finalization is acknowledged; an
 idempotent retry must not duplicate history.
 See `docs/voting-results.md` for the result and assignment contract.
+
+SharedTree change notifications schedule reconciliation outside the read
+callback and coalesce pending work. A reconciliation transaction that finds no
+repair performs no persisted field changes, preventing feedback loops and
+repeated save churn. Presence-only changes never write SharePoint discovery
+metadata.
 
 Ending an open session is another host-authorized transaction. It cancels an
 unfinished round, records end audit fields, clears the active round and root

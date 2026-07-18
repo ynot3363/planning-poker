@@ -7,12 +7,9 @@ import type { IOdspTokenProvider, OdspContainerServices } from '@fluidframework/
 import { Tree, TreeViewConfiguration } from '@fluidframework/tree';
 import type { TreeNode, TreeView } from '@fluidframework/tree';
 import { SharedTree } from '@fluidframework/tree/legacy';
-import {
-  CURRENT_SCHEMA_VERSION,
-  MAX_SUPPORTED_SCHEMA_VERSION,
-  MIN_SUPPORTED_SCHEMA_VERSION
-} from '../domain/planningPokerDomain';
+import { CURRENT_SCHEMA_VERSION } from '../domain/planningPokerDomain';
 import type {
+  EstimateHistoryEntry,
   PlanningPokerDocumentRoot,
   PlanningPokerTeam,
   PointingStory,
@@ -24,15 +21,35 @@ import type {
   VotingSession
 } from '../domain/planningPokerDomain';
 import { PlanningPokerDocumentRootSchema } from '../domain/planningPokerSchema';
+import { canTransitionRound, getSchemaCompatibility } from '../domain/planningPokerValidation';
 import type {
   IPlanningPokerStorageConfiguration,
   ISharePointTransport
 } from '../storage/storageTypes';
 import type { IGraphDriveItem, IPlanningPokerDriveService } from './graphDriveService';
+import {
+  createCanonicalVoteOperationKey,
+  isValidOperationId,
+  reconcileCollaborativeDocument,
+  selectCanonicalVotes
+} from './collaborationReconciliation';
+import {
+  applyStoryCreate,
+  applyStoryDelete,
+  applyStoryEdit,
+  applyStoryImport,
+  applyStoryTransition,
+  applyTeamActive,
+  applyTeamEdit,
+  applyVotingParticipantConnection,
+  applyVotingSessionStart
+} from './intentCommands';
+import type { IntentDocumentRoot } from './intentCommands';
 import { TeamRepositoryError, projectTeamMetadata } from './teamRepository';
 import type {
   HostedTeamSummary,
   ITeamDocumentStore,
+  IntentCommandResult,
   SessionParticipantJoin,
   TeamDocumentHandle
 } from './teamRepository';
@@ -90,6 +107,7 @@ interface ITreeRootView {
 }
 
 interface IMutableDocumentRoot {
+  schemaVersion: string;
   team: PlanningPokerTeam;
   stories: readonly PointingStory[];
   sessions: readonly VotingSession[];
@@ -118,24 +136,23 @@ interface IMutableVotingRound {
   revealReason?: StoryVotingRound['revealReason'];
   revealedVotedCount?: number;
   revealedMissingCount?: number;
+  automaticRevealSuppressionKey?: string;
   assignedValue?: string;
   finalizedAt?: string;
   finalizedBy?: UserReference;
+  finalizationOperationId?: string;
 }
 
 interface IMutablePointingStory {
   readonly id: string;
+  title: string;
+  description: string;
+  link?: string;
   status: PointingStory['status'];
   currentEstimate?: string;
   readonly estimateHistory: PointingStory['estimateHistory'];
   updatedAt: string;
   updatedBy: UserReference;
-}
-
-interface IMutableVoteRecord {
-  readonly participantId: string;
-  value: string;
-  castAt: string;
 }
 
 interface IMutableParticipantPresence {
@@ -354,7 +371,28 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
         );
       }
       const snapshot = this.readSnapshot(untypedView);
-      this.validateSchemaVersion(snapshot.schemaVersion);
+      const compatibility = getSchemaCompatibility(snapshot.schemaVersion);
+      if (compatibility === 'newer-unsupported' || compatibility === 'invalid') {
+        view.dispose();
+        services.dispose();
+        container.dispose();
+        throw new TeamRepositoryError(
+          'incompatible-schema',
+          'This team uses an unsupported Planning Poker schema version.'
+        );
+      }
+      const reconcileLoadedRoot = (root: unknown): void => {
+        const document = root as IMutableDocumentRoot;
+        if (compatibility === 'migratable') {
+          document.schemaVersion = CURRENT_SCHEMA_VERSION;
+        }
+        reconcileCollaborativeDocument(root as unknown as PlanningPokerDocumentRoot);
+      };
+      if (Tree.is(untypedView.root, PlanningPokerDocumentRootSchema)) {
+        Tree.runTransaction(view, reconcileLoadedRoot);
+      } else {
+        reconcileLoadedRoot(untypedView.root);
+      }
       this.attachedFiles.set(snapshot.team.id, {
         driveItemId: id,
         fileName: `${snapshot.team.title}.fluid`
@@ -453,6 +491,7 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
     const untypedView = view as unknown as ITreeRootView;
     let isDisposed = false;
     let presenceReconcileTimeoutId: number | undefined;
+    let collaborationReconcileTimeoutId: number | undefined;
     const participantBindings = new Map<Attendee, IParticipantPresenceBinding>();
     const presence = getPresence(container);
     const presenceSchema = {
@@ -465,25 +504,80 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
       'planning-poker:participant:v1',
       presenceSchema
     ).states.participant;
+    const getBinding = (attendee: Attendee): IParticipantPresenceBinding | undefined =>
+      participantPresence.getRemote(attendee).value();
+    const hasConnectedBinding = (binding: IParticipantPresenceBinding): boolean => {
+      const myself = presence.attendees.getMyself();
+      if (
+        myself.getConnectionStatus() === 'Connected' &&
+        participantPresence.local.sessionId === binding.sessionId &&
+        participantPresence.local.participantId === binding.participantId
+      ) {
+        return true;
+      }
+      return participantPresence.getStateAttendees().some((attendee: Attendee) => {
+        if (attendee === myself) {
+          return false;
+        }
+        const candidate = getBinding(attendee);
+        return (
+          attendee.getConnectionStatus() === 'Connected' &&
+          candidate?.sessionId === binding.sessionId &&
+          candidate.participantId === binding.participantId
+        );
+      });
+    };
+    const isParticipantConnected = (sessionId: string, participant: SessionParticipant): boolean =>
+      participant.presence.connection === 'Connected' ||
+      hasConnectedBinding({
+        sessionId,
+        participantId: participant.id,
+        mode: participant.kind
+      });
+    const reconcileWithPresence = (document: PlanningPokerDocumentRoot): void => {
+      reconcileCollaborativeDocument(document, {
+        getConnectedParticipantIds: (session) =>
+          session.participants
+            .filter((participant) => isParticipantConnected(session.id, participant))
+            .map((participant) => participant.id)
+      });
+    };
+    const teardownSessionPresence = (
+      sessionId?: string,
+      shouldCancelPendingReconciliation: boolean = sessionId === undefined
+    ): void => {
+      if (sessionId === undefined || participantPresence.local.sessionId === sessionId) {
+        participantPresence.local = { sessionId: '', participantId: '', mode: 'None' };
+      }
+      participantBindings.forEach((binding, attendee) => {
+        if (sessionId === undefined || binding.sessionId === sessionId) {
+          participantBindings.delete(attendee);
+        }
+      });
+      if (presenceReconcileTimeoutId !== undefined && shouldCancelPendingReconciliation) {
+        window.clearTimeout(presenceReconcileTimeoutId);
+        presenceReconcileTimeoutId = undefined;
+      }
+    };
     const setParticipantConnection = (
       sessionId: string,
       participantId: string,
       connection: 'Connected' | 'Disconnected',
       timestamp: string
-    ): void => {
+    ): import('./teamRepository').VotingParticipantConnectionResult => {
+      let result: import('./teamRepository').VotingParticipantConnectionResult = 'invalid-session';
       Tree.runTransaction(view, (root) => {
-        const document = root as unknown as IMutableDocumentRoot;
-        const sessionNode = document.sessions.find((session) => session.id === sessionId);
-        const participant = sessionNode?.participants.find(
-          (candidate) => candidate.id === participantId
-        );
-        if (participant === undefined) {
-          return;
+        result = applyVotingParticipantConnection(root as unknown as IntentDocumentRoot, {
+          sessionId,
+          participantId,
+          connection,
+          timestamp
+        });
+        if (result === 'updated') {
+          reconcileWithPresence(root as unknown as PlanningPokerDocumentRoot);
         }
-        const presence = participant.presence as IMutableParticipantPresence;
-        presence.connection = connection;
-        presence.lastSeenAt = timestamp;
       });
+      return result;
     };
     const removeAnonymousPresenceParticipant = (
       binding: IParticipantPresenceBinding,
@@ -516,50 +610,24 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
         if (activeRound !== undefined && voteIndex >= 0) {
           removeTreeItemAt(activeRound.votes, voteIndex);
         }
+        reconcileWithPresence(root as unknown as PlanningPokerDocumentRoot);
         const session = sessionNode as unknown as IMutableVotingSession;
         session.updatedAt = timestamp;
         document.updatedAt = timestamp;
       });
     };
-    const getBinding = (attendee: Attendee): IParticipantPresenceBinding | undefined =>
-      participantPresence.getRemote(attendee).value();
-    const hasConnectedBinding = (binding: IParticipantPresenceBinding): boolean => {
-      const myself = presence.attendees.getMyself();
-      if (
-        myself.getConnectionStatus() === 'Connected' &&
-        participantPresence.local.sessionId === binding.sessionId &&
-        participantPresence.local.participantId === binding.participantId
-      ) {
-        return true;
-      }
-      return participantPresence.getStateAttendees().some((attendee: Attendee) => {
-        if (attendee === myself) {
-          return false;
-        }
-        const candidate = getBinding(attendee);
-        return (
-          attendee.getConnectionStatus() === 'Connected' &&
-          candidate?.sessionId === binding.sessionId &&
-          candidate.participantId === binding.participantId
-        );
-      });
-    };
-    const isParticipantConnected = (sessionId: string, participant: SessionParticipant): boolean =>
-      participant.presence.connection === 'Connected' ||
-      hasConnectedBinding({
-        sessionId,
-        participantId: participant.id,
-        mode: participant.kind
-      });
-    const handlePresenceConnected = (binding: IParticipantPresenceBinding): void => {
+    const handlePresenceConnected = (
+      binding: IParticipantPresenceBinding
+    ): import('./teamRepository').VotingParticipantConnectionResult | undefined => {
       if (binding.mode !== 'None') {
-        setParticipantConnection(
+        return setParticipantConnection(
           binding.sessionId,
           binding.participantId,
           'Connected',
           new Date().toISOString()
         );
       }
+      return undefined;
     };
     const reconcileParticipantPresence = (): void => {
       const connectedBindings = new Set<string>();
@@ -675,6 +743,7 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
       mutableRound.revealedMissingCount = connectedParticipants.filter(
         (participant) => !votedIds.has(participant.id)
       ).length;
+      mutableRound.automaticRevealSuppressionKey = undefined;
       if (
         currentUser !== undefined &&
         (reason === 'Manual' || session.settings.votingMode === 'Named')
@@ -685,33 +754,95 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
         mutableRound.timer = stopTimerForReveal(round, timestamp);
       }
     };
+    const rootNode = untypedView.root as TreeNode;
+    const isHydratedRoot = Tree.is(rootNode, PlanningPokerDocumentRootSchema);
+    let isReconcilingCollaborativeState = false;
+    const reconcileAfterTreeChange = (): void => {
+      if (isReconcilingCollaborativeState || isDisposed) {
+        return;
+      }
+      isReconcilingCollaborativeState = true;
+      try {
+        Tree.runTransaction(view, (root) => {
+          reconcileWithPresence(root as unknown as PlanningPokerDocumentRoot);
+        });
+      } finally {
+        isReconcilingCollaborativeState = false;
+      }
+      const snapshot = this.readSnapshot(untypedView);
+      if (
+        participantPresence.local.mode !== 'None' &&
+        participantPresence.local.sessionId !== snapshot.openSessionId
+      ) {
+        teardownSessionPresence(participantPresence.local.sessionId, true);
+      }
+    };
+    const scheduleCollaborativeReconciliation = (): void => {
+      if (collaborationReconcileTimeoutId !== undefined || isDisposed) {
+        return;
+      }
+      collaborationReconcileTimeoutId = window.setTimeout(() => {
+        collaborationReconcileTimeoutId = undefined;
+        reconcileAfterTreeChange();
+      }, 0);
+    };
+    const unsubscribeCollaborativeReconciliation = isHydratedRoot
+      ? Tree.on(rootNode, 'treeChanged', scheduleCollaborativeReconciliation)
+      : (): void => undefined;
     return {
       teamId,
       driveItemId,
       getSnapshot: () => this.readSnapshot(untypedView),
       getConnectionState: () =>
         container.connectionState === FLUID_CONNECTED_STATE ? 'Connected' : 'Disconnected',
-      updateTeam: (team) => {
+      editTeam: (command) => {
+        let result: IntentCommandResult = { status: 'stale', reason: 'team-not-found' };
         Tree.runTransaction(view, (root) => {
-          const document = root as unknown as IMutableDocumentRoot;
-          document.team = team;
-          document.updatedAt = team.updatedAt;
+          result = applyTeamEdit(root as unknown as IntentDocumentRoot, command);
         });
+        return result;
       },
-      updateStories: (stories, updatedAt) => {
+      setTeamActive: (command) => {
+        let result: IntentCommandResult = { status: 'stale', reason: 'team-not-found' };
         Tree.runTransaction(view, (root) => {
-          const document = root as unknown as IMutableDocumentRoot;
-          document.stories = stories;
-          document.updatedAt = updatedAt;
+          result = applyTeamActive(root as unknown as IntentDocumentRoot, command);
         });
+        return result;
       },
-      updateSessions: (sessions, openSessionId, updatedAt) => {
+      createStory: (command) => {
+        let result: IntentCommandResult = { status: 'rejected', reason: 'host-required' };
         Tree.runTransaction(view, (root) => {
-          const document = root as unknown as IMutableDocumentRoot;
-          document.sessions = sessions;
-          document.openSessionId = openSessionId;
-          document.updatedAt = updatedAt;
+          result = applyStoryCreate(root as unknown as IntentDocumentRoot, command);
         });
+        return result;
+      },
+      importStories: (command) => {
+        let result: IntentCommandResult = { status: 'rejected', reason: 'host-required' };
+        Tree.runTransaction(view, (root) => {
+          result = applyStoryImport(root as unknown as IntentDocumentRoot, command);
+        });
+        return result;
+      },
+      editStory: (command) => {
+        let result: IntentCommandResult = { status: 'rejected', reason: 'host-required' };
+        Tree.runTransaction(view, (root) => {
+          result = applyStoryEdit(root as unknown as IntentDocumentRoot, command);
+        });
+        return result;
+      },
+      transitionStory: (command) => {
+        let result: IntentCommandResult = { status: 'rejected', reason: 'host-required' };
+        Tree.runTransaction(view, (root) => {
+          result = applyStoryTransition(root as unknown as IntentDocumentRoot, command);
+        });
+        return result;
+      },
+      deleteStory: (command) => {
+        let result: IntentCommandResult = { status: 'rejected', reason: 'host-required' };
+        Tree.runTransaction(view, (root) => {
+          result = applyStoryDelete(root as unknown as IntentDocumentRoot, command);
+        });
+        return result;
       },
       prepareVotingSession: (session, updatedAt) => {
         let selectedSessionId = session.id;
@@ -732,6 +863,18 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
         });
         return selectedSessionId;
       },
+      startVotingSession: (sessionId, currentUser, updatedAt) => {
+        let result: IntentCommandResult = { status: 'stale', reason: 'session-not-found' };
+        Tree.runTransaction(view, (root) => {
+          result = applyVotingSessionStart(
+            root as unknown as IntentDocumentRoot,
+            sessionId,
+            currentUser,
+            updatedAt
+          );
+        });
+        return result;
+      },
       joinVotingSession: (sessionId, participant, timestamp) => {
         let selected: SessionParticipant | undefined;
         Tree.runTransaction(view, (root) => {
@@ -739,19 +882,19 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
           const sessionNode = document.sessions.find(
             (candidate) =>
               candidate.id === sessionId &&
+              candidate.id === document.openSessionId &&
               (candidate.status === 'Lobby' || candidate.status === 'Active')
           );
           if (sessionNode === undefined) {
             return;
           }
           const session = sessionNode as unknown as IMutableVotingSession;
-          const currentParticipants = cloneParticipants(session.participants);
-          const existing = findJoinedParticipant(currentParticipants, participant);
+          const existing = findJoinedParticipant(sessionNode.participants, participant);
           if (existing !== undefined) {
-            selected = {
-              ...existing,
-              presence: { connection: 'Connected', lastSeenAt: timestamp }
-            };
+            const presence = existing.presence as IMutableParticipantPresence;
+            presence.connection = 'Connected';
+            presence.lastSeenAt = timestamp;
+            selected = JSON.parse(JSON.stringify(existing)) as SessionParticipant;
           } else if (participant.kind === 'Named') {
             selected = {
               kind: 'Named',
@@ -761,7 +904,7 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
               presence: { connection: 'Connected', lastSeenAt: timestamp }
             };
           } else {
-            const aliasNumber = nextAnonymousAliasNumber(currentParticipants);
+            const aliasNumber = nextAnonymousAliasNumber(sessionNode.participants);
             selected = {
               kind: 'Anonymous',
               id: participant.participantId,
@@ -774,13 +917,9 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
           if (selectedParticipant === undefined) {
             return;
           }
-          const participants =
-            existing === undefined
-              ? [...currentParticipants, selectedParticipant]
-              : currentParticipants.map((current) =>
-                  current.id === existing.id ? selectedParticipant : current
-                );
-          session.participants = participants;
+          if (existing === undefined) {
+            appendTreeItem(session.participants, selectedParticipant);
+          }
           session.updatedAt = timestamp;
           document.updatedAt = timestamp;
         });
@@ -900,37 +1039,50 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
             result = 'invalid-vote';
             return;
           }
+          if (!isValidOperationId(vote.operationId)) {
+            result = 'invalid-command';
+            return;
+          }
           const session = sessionNode as unknown as IMutableVotingSession;
-          const existingVote = round.votes.find(
+          const replayedVote = round.votes.find(
+            (candidate) => candidate.operationId === vote.operationId
+          );
+          if (replayedVote !== undefined) {
+            result =
+              replayedVote.participantId === vote.participantId && replayedVote.value === vote.value
+                ? 'already-cast'
+                : 'reconciled-conflict';
+            return;
+          }
+          const existingVote = selectCanonicalVotes(round).find(
             (candidate) => candidate.participantId === vote.participantId
           );
-          if (existingVote === undefined) {
-            appendTreeItem(round.votes, vote);
-          } else {
-            const mutableVote = existingVote as unknown as IMutableVoteRecord;
-            mutableVote.value = vote.value;
-            mutableVote.castAt = vote.castAt;
+          if (existingVote?.value === vote.value) {
+            result = 'already-cast';
+            return;
           }
+          if (existingVote?.operationId !== vote.supersedesOperationId) {
+            result = 'reconciled-conflict';
+            return;
+          }
+          appendTreeItem(round.votes, {
+            operationId: vote.operationId,
+            ...(vote.supersedesOperationId === undefined
+              ? {}
+              : { supersedesOperationId: vote.supersedesOperationId }),
+            participantId: vote.participantId,
+            value: vote.value,
+            castAt: vote.castAt
+          });
+          reconcileWithPresence(root as unknown as PlanningPokerDocumentRoot);
           session.updatedAt = vote.castAt;
           document.updatedAt = vote.castAt;
-          const connectedParticipants = sessionNode.participants.filter((participant) =>
-            isParticipantConnected(sessionNode.id, participant)
+          const acceptedVote = selectCanonicalVotes(round).find(
+            (candidate) => candidate.participantId === vote.participantId
           );
-          const votedIds = new Set(round.votes.map((candidate) => candidate.participantId));
-          if (
-            connectedParticipants.length > 0 &&
-            connectedParticipants.every((participant) => votedIds.has(participant.id))
-          ) {
-            const participant = sessionNode.participants.find(
-              (candidate) => candidate.id === vote.participantId
-            );
-            revealRound(
-              sessionNode,
-              round,
-              'Automatic',
-              participant?.kind === 'Named' ? participant.user : undefined,
-              vote.castAt
-            );
+          if (acceptedVote?.operationId !== vote.operationId) {
+            result = 'reconciled-conflict';
+            return;
           }
           result = 'cast';
         });
@@ -1075,7 +1227,7 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
           if (
             round === undefined ||
             round.id !== sessionNode.activeRoundId ||
-            round.status !== 'Revealed'
+            !canTransitionRound(round.status, 'Voting', 'undo-reveal')
           ) {
             result = 'invalid-round';
             return;
@@ -1087,6 +1239,7 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
           mutableRound.revealReason = undefined;
           mutableRound.revealedVotedCount = undefined;
           mutableRound.revealedMissingCount = undefined;
+          mutableRound.automaticRevealSuppressionKey = createCanonicalVoteOperationKey(round);
           const session = sessionNode as unknown as IMutableVotingSession;
           session.updatedAt = timestamp;
           document.updatedAt = timestamp;
@@ -1094,7 +1247,22 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
         });
         return result;
       },
-      finalizeVotingRound: (sessionId, roundId, scaleValue, currentUser, timestamp) => {
+      finalizeVotingRound: (
+        sessionId,
+        roundId,
+        scaleValue,
+        currentUser,
+        timestamp,
+        operationId,
+        supersedesOperationId
+      ) => {
+        const command = {
+          operationId,
+          ...(supersedesOperationId === undefined ? {} : { supersedesOperationId }),
+          scaleValue,
+          currentUser,
+          timestamp
+        };
         let result: import('./teamRepository').VotingFinalizeResult = 'invalid-session';
         Tree.runTransaction(view, (root) => {
           const document = root as unknown as IMutableDocumentRoot;
@@ -1107,17 +1275,40 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
           if (sessionNode === undefined) {
             return;
           }
-          if (!document.team.hosts.some((host) => host.objectId === currentUser.objectId)) {
+          if (!isValidOperationId(command.operationId)) {
+            result = 'invalid-command';
+            return;
+          }
+          if (!document.team.hosts.some((host) => host.objectId === command.currentUser.objectId)) {
             result = 'host-required';
             return;
           }
           const round = sessionNode.rounds.find((candidate) => candidate.id === roundId);
+          let replayedFinalization: EstimateHistoryEntry | undefined;
+          document.stories.some((story) => {
+            replayedFinalization = story.estimateHistory.find(
+              (entry) => entry.operationId === command.operationId
+            );
+            return replayedFinalization !== undefined;
+          });
+          if (replayedFinalization !== undefined) {
+            result =
+              replayedFinalization.roundId === roundId &&
+              replayedFinalization.value === command.scaleValue
+                ? 'already-finalized'
+                : 'reconciled-conflict';
+            return;
+          }
           if (round?.status === 'Finalized') {
-            if (round.assignedValue === scaleValue) {
+            if (round.assignedValue === command.scaleValue) {
               result = 'already-finalized';
               return;
             }
-            if (sessionNode.settings.scaleValues.indexOf(scaleValue) < 0) {
+            if (round.finalizationOperationId !== command.supersedesOperationId) {
+              result = 'reconciled-conflict';
+              return;
+            }
+            if (sessionNode.settings.scaleValues.indexOf(command.scaleValue) < 0) {
               result = 'invalid-estimate';
               return;
             }
@@ -1129,24 +1320,33 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
               return;
             }
             const mutableRound = round as unknown as IMutableVotingRound;
-            mutableRound.assignedValue = scaleValue;
-            mutableRound.finalizedAt = timestamp;
-            mutableRound.finalizedBy = copyUserReference(currentUser);
+            mutableRound.assignedValue = command.scaleValue;
+            mutableRound.finalizedAt = command.timestamp;
+            mutableRound.finalizedBy = copyUserReference(command.currentUser);
+            mutableRound.finalizationOperationId = command.operationId;
             const mutableStory = story as unknown as IMutablePointingStory;
-            mutableStory.currentEstimate = scaleValue;
+            mutableStory.currentEstimate = command.scaleValue;
             appendTreeItem(mutableStory.estimateHistory, {
+              operationId: command.operationId,
+              ...(command.supersedesOperationId === undefined
+                ? {}
+                : { supersedesOperationId: command.supersedesOperationId }),
               sessionId,
               roundId,
-              value: scaleValue,
-              finalizedAt: timestamp,
-              finalizedBy: copyUserReference(currentUser)
+              value: command.scaleValue,
+              finalizedAt: command.timestamp,
+              finalizedBy: copyUserReference(command.currentUser)
             });
-            mutableStory.updatedAt = timestamp;
-            mutableStory.updatedBy = copyUserReference(currentUser);
+            mutableStory.updatedAt = command.timestamp;
+            mutableStory.updatedBy = copyUserReference(command.currentUser);
             const session = sessionNode as unknown as IMutableVotingSession;
-            session.updatedAt = timestamp;
-            document.updatedAt = timestamp;
-            result = 'finalized';
+            session.updatedAt = command.timestamp;
+            document.updatedAt = command.timestamp;
+            reconcileCollaborativeDocument(root as unknown as PlanningPokerDocumentRoot);
+            result =
+              round.finalizationOperationId === command.operationId
+                ? 'finalized'
+                : 'reconciled-conflict';
             return;
           }
           if (
@@ -1157,7 +1357,11 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
             result = 'invalid-round';
             return;
           }
-          if (sessionNode.settings.scaleValues.indexOf(scaleValue) < 0) {
+          if (command.supersedesOperationId !== undefined) {
+            result = 'reconciled-conflict';
+            return;
+          }
+          if (sessionNode.settings.scaleValues.indexOf(command.scaleValue) < 0) {
             result = 'invalid-estimate';
             return;
           }
@@ -1170,38 +1374,49 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
           }
           const mutableRound = round as unknown as IMutableVotingRound;
           mutableRound.status = 'Finalized';
-          mutableRound.assignedValue = scaleValue;
-          mutableRound.finalizedAt = timestamp;
-          mutableRound.finalizedBy = copyUserReference(currentUser);
+          mutableRound.assignedValue = command.scaleValue;
+          mutableRound.finalizedAt = command.timestamp;
+          mutableRound.finalizedBy = copyUserReference(command.currentUser);
+          mutableRound.finalizationOperationId = command.operationId;
           const mutableStory = story as unknown as IMutablePointingStory;
           mutableStory.status = 'Pointed';
-          mutableStory.currentEstimate = scaleValue;
+          mutableStory.currentEstimate = command.scaleValue;
           appendTreeItem(mutableStory.estimateHistory, {
+            operationId: command.operationId,
+            ...(command.supersedesOperationId === undefined
+              ? {}
+              : { supersedesOperationId: command.supersedesOperationId }),
             sessionId,
             roundId,
-            value: scaleValue,
-            finalizedAt: timestamp,
-            finalizedBy: copyUserReference(currentUser)
+            value: command.scaleValue,
+            finalizedAt: command.timestamp,
+            finalizedBy: copyUserReference(command.currentUser)
           });
-          mutableStory.updatedAt = timestamp;
-          mutableStory.updatedBy = copyUserReference(currentUser);
+          mutableStory.updatedAt = command.timestamp;
+          mutableStory.updatedBy = copyUserReference(command.currentUser);
           const session = sessionNode as unknown as IMutableVotingSession;
           appendTreeItem(sessionNode.finalizedRoundIds, roundId);
           session.activeRoundId = undefined;
-          session.updatedAt = timestamp;
-          document.updatedAt = timestamp;
-          result = 'finalized';
+          session.updatedAt = command.timestamp;
+          document.updatedAt = command.timestamp;
+          reconcileCollaborativeDocument(root as unknown as PlanningPokerDocumentRoot);
+          result =
+            round.finalizationOperationId === command.operationId
+              ? 'finalized'
+              : 'reconciled-conflict';
         });
         return result;
       },
       endVotingSession: (sessionId, currentUser, timestamp) => {
         let result: import('./teamRepository').VotingEndResult = 'invalid-session';
+        let shouldTeardownPresence = false;
         let didEnd = false;
         Tree.runTransaction(view, (root) => {
           const document = root as unknown as IMutableDocumentRoot;
           const sessionNode = document.sessions.find((candidate) => candidate.id === sessionId);
           if (sessionNode?.status === 'Ended') {
             result = 'already-ended';
+            shouldTeardownPresence = true;
             return;
           }
           if (
@@ -1237,19 +1452,19 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
           document.openSessionId = undefined;
           document.updatedAt = timestamp;
           result = 'ended';
+          shouldTeardownPresence = true;
           didEnd = true;
         });
-        if (didEnd) {
-          participantPresence.local = { sessionId: '', participantId: '', mode: 'None' };
+        if (shouldTeardownPresence) {
+          teardownSessionPresence(sessionId, didEnd);
         }
         return result;
       },
       setVotingParticipantConnection: setParticipantConnection,
       waitForSaved: () => this.waitForSaved(container),
       subscribe: (listener) => {
-        const root = untypedView.root as TreeNode;
         let isSubscribed = true;
-        const unsubscribe = Tree.on(root, 'treeChanged', listener);
+        const unsubscribe = Tree.on(rootNode, 'treeChanged', listener);
         const unsubscribePresenceUpdated = participantPresence.events.on(
           'remoteUpdated',
           (update: {
@@ -1259,8 +1474,12 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
             const binding = update.value();
             if (binding !== undefined) {
               participantBindings.set(update.attendee, binding);
-              handlePresenceConnected(binding);
-              schedulePresenceReconciliation();
+              const result = handlePresenceConnected(binding);
+              if (result === 'session-ended') {
+                participantBindings.delete(update.attendee);
+              } else {
+                schedulePresenceReconciliation();
+              }
             }
           }
         );
@@ -1285,9 +1504,11 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
       dispose: () => {
         if (!isDisposed) {
           isDisposed = true;
-          if (presenceReconcileTimeoutId !== undefined) {
-            window.clearTimeout(presenceReconcileTimeoutId);
+          teardownSessionPresence();
+          if (collaborationReconcileTimeoutId !== undefined) {
+            window.clearTimeout(collaborationReconcileTimeoutId);
           }
+          unsubscribeCollaborativeReconciliation();
           view.dispose();
           services.dispose();
           container.dispose();
@@ -1415,16 +1636,6 @@ export class OdspTeamDocumentStore implements ITeamDocumentStore {
       throw new TeamRepositoryError(
         'corrupt-document',
         'This team document is missing required Planning Poker data.'
-      );
-    }
-  }
-
-  /** @param version - Persisted schema version. @returns `void` when supported. */
-  private validateSchemaVersion(version: string): void {
-    if (version < MIN_SUPPORTED_SCHEMA_VERSION || version > MAX_SUPPORTED_SCHEMA_VERSION) {
-      throw new TeamRepositoryError(
-        'incompatible-schema',
-        'This team uses an unsupported Planning Poker schema version.'
       );
     }
   }
@@ -1735,19 +1946,4 @@ function nextAnonymousAliasNumber(participants: readonly SessionParticipant[]): 
     candidate += 1;
   }
   return candidate;
-}
-
-/**
- * Detaches participant data from hydrated SharedTree nodes before reinsertion.
- *
- * @remarks SharedTree rejects inserting a node that is already parented. JSON cloning is safe for
- * this intentionally serializable domain boundary and matches the document snapshot conversion.
- *
- * @param participants - Hydrated or plain participant collection.
- * @returns Plain participant records with no SharedTree parent bindings.
- */
-function cloneParticipants(
-  participants: readonly SessionParticipant[]
-): readonly SessionParticipant[] {
-  return JSON.parse(JSON.stringify(participants)) as readonly SessionParticipant[];
 }

@@ -166,7 +166,12 @@ export class TeamManagementService implements ITeamManagementService {
       return { isSaved: false, fieldErrors: submission.errors };
     }
     try {
-      await this.repository.updateTeamDocument(session.handle, this.currentUser, submission.team);
+      await this.repository.editTeamDocument(
+        session.handle,
+        this.currentUser,
+        session.team,
+        submission.team
+      );
       return { isSaved: true };
     } catch (error: unknown) {
       return this.mapSaveError(error);
@@ -178,20 +183,13 @@ export class TeamManagementService implements ITeamManagementService {
     let session: TeamEditSession | undefined;
     try {
       session = await this.openTeam(team);
-      const submission = createTeamFormSubmission(
-        { ...session.values, isActive },
-        {
-          currentUser: this.currentUser,
-          existingTeam: session.team,
-          existingTeams: [team],
-          createId: this.createId,
-          now: this.now
-        }
+      await this.repository.setTeamActive(
+        session.handle,
+        this.currentUser,
+        session.team.isActive,
+        isActive,
+        this.now()
       );
-      if (!submission.isValid) {
-        return { isSaved: false, fieldErrors: submission.errors };
-      }
-      await this.repository.updateTeamDocument(session.handle, this.currentUser, submission.team);
       return { isSaved: true };
     } catch (error: unknown) {
       return this.mapSaveError(error);

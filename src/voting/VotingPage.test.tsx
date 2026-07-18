@@ -59,10 +59,15 @@ function createService(
     driveItemId: team.driveItemId,
     getSnapshot: () => document,
     getConnectionState: () => 'Connected',
-    updateTeam: jest.fn(),
-    updateStories: jest.fn(),
-    updateSessions: jest.fn(),
+    editTeam: jest.fn(() => ({ status: 'applied' })),
+    setTeamActive: jest.fn(() => ({ status: 'applied' })),
+    createStory: jest.fn(() => ({ status: 'applied' })),
+    importStories: jest.fn(() => ({ status: 'applied' })),
+    editStory: jest.fn(() => ({ status: 'applied' })),
+    transitionStory: jest.fn(() => ({ status: 'applied' })),
+    deleteStory: jest.fn(() => ({ status: 'applied' })),
     prepareVotingSession: jest.fn((candidate) => candidate.id),
+    startVotingSession: jest.fn(() => ({ status: 'applied' })),
     joinVotingSession: jest.fn(() => undefined),
     selectVotingStory: jest.fn(() => 'selected'),
     castVotingVote: jest.fn(() => 'cast'),
@@ -990,6 +995,8 @@ describe('VotingPage', () => {
 
     expect(service.undoReveal).toHaveBeenCalledWith(expect.anything(), 'results-round');
     expect(container.textContent).not.toContain('Named participant results');
+    expect(container.textContent).toContain('Resume');
+    expect(container.textContent).toContain('Reset');
     const revealAgain = Array.from(container.querySelectorAll('button')).find(
       (button) => button.textContent === 'Reveal Results'
     );

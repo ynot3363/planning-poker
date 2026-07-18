@@ -1,4 +1,5 @@
 import { CURRENT_SCHEMA_VERSION, SHAREPOINT_METADATA_FIELDS } from '../domain/planningPokerDomain';
+import { getSchemaCompatibility } from '../domain/planningPokerValidation';
 import type { IPlanningPokerDriveService } from '../repository/graphDriveService';
 import { PLANNING_POKER_LIBRARY_TITLE, STORAGE_PROVISIONING_VERSION } from './storageTypes';
 import type {
@@ -91,9 +92,11 @@ export class PlanningPokerStorageService implements IPlanningPokerStorageService
     if (!isStorageConfiguration(configuration)) {
       return { isValid: false, message: 'Saved storage settings are incomplete.' };
     }
+    const schemaCompatibility = getSchemaCompatibility(configuration.schemaVersion);
     if (
       configuration.webAbsoluteUrl !== this.options.webAbsoluteUrl ||
-      configuration.schemaVersion !== CURRENT_SCHEMA_VERSION
+      schemaCompatibility === 'invalid' ||
+      schemaCompatibility === 'newer-unsupported'
     ) {
       return {
         isValid: false,

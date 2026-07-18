@@ -2,6 +2,16 @@ import { fixtureDocument, fixtureUser } from '../domain/planningPokerFixtures';
 import type { PlanningPokerDocumentRoot, PlanningPokerTeam } from '../domain/planningPokerDomain';
 import type { IPlanningPokerStorageConfiguration } from '../storage/storageTypes';
 import {
+  applyStoryCreate,
+  applyStoryDelete,
+  applyStoryEdit,
+  applyStoryImport,
+  applyStoryTransition,
+  applyTeamActive,
+  applyTeamEdit,
+  applyVotingSessionStart
+} from './intentCommands';
+import {
   TeamRepository,
   TeamRepositoryError,
   isHostedBy,
@@ -23,21 +33,19 @@ const storage: IPlanningPokerStorageConfiguration = {
 };
 
 function createHandle(document: PlanningPokerDocumentRoot = fixtureDocument): TeamDocumentHandle {
-  let snapshot = document;
+  let snapshot = JSON.parse(JSON.stringify(document)) as PlanningPokerDocumentRoot;
   return {
     teamId: document.team.id,
     driveItemId: 'item-id',
     getSnapshot: jest.fn(() => snapshot),
     getConnectionState: () => 'Connected',
-    updateTeam: jest.fn((team: PlanningPokerTeam) => {
-      snapshot = { ...snapshot, team, updatedAt: team.updatedAt };
-    }),
-    updateStories: jest.fn((stories, updatedAt) => {
-      snapshot = { ...snapshot, stories, updatedAt };
-    }),
-    updateSessions: jest.fn((sessions, openSessionId, updatedAt) => {
-      snapshot = { ...snapshot, sessions, openSessionId, updatedAt };
-    }),
+    editTeam: jest.fn((command) => applyTeamEdit(snapshot, command)),
+    setTeamActive: jest.fn((command) => applyTeamActive(snapshot, command)),
+    createStory: jest.fn((command) => applyStoryCreate(snapshot, command)),
+    importStories: jest.fn((command) => applyStoryImport(snapshot, command)),
+    editStory: jest.fn((command) => applyStoryEdit(snapshot, command)),
+    transitionStory: jest.fn((command) => applyStoryTransition(snapshot, command)),
+    deleteStory: jest.fn((command) => applyStoryDelete(snapshot, command)),
     prepareVotingSession: jest.fn((session, updatedAt) => {
       snapshot = {
         ...snapshot,
@@ -47,6 +55,9 @@ function createHandle(document: PlanningPokerDocumentRoot = fixtureDocument): Te
       };
       return session.id;
     }),
+    startVotingSession: jest.fn((sessionId, currentUser, updatedAt) =>
+      applyVotingSessionStart(snapshot, sessionId, currentUser, updatedAt)
+    ),
     joinVotingSession: jest.fn(() => undefined),
     selectVotingStory: jest.fn(() => 'invalid-session'),
     castVotingVote: jest.fn(() => 'invalid-session'),
@@ -124,7 +135,7 @@ describe('TeamRepository', () => {
       hosts: [fixtureUser],
       participants: [],
       isActive: true,
-      schemaVersion: '1.0.0',
+      schemaVersion: '1.1.0',
       activeSessionId: undefined,
       lastActivity: fixtureDocument.updatedAt
     });
@@ -178,15 +189,21 @@ describe('TeamRepository', () => {
       updatedAt: '2026-07-10T01:00:00.000Z'
     };
 
-    await repository.updateTeamDocument(handle, fixtureUser, updatedTeam);
+    await repository.editTeamDocument(handle, fixtureUser, fixtureDocument.team, updatedTeam);
 
-    expect(handle.updateTeam).toHaveBeenCalledWith(updatedTeam);
+    expect(handle.editTeam).toHaveBeenCalledWith(
+      expect.objectContaining({
+        teamId: updatedTeam.id,
+        expectedUpdatedAt: fixtureDocument.team.updatedAt,
+        title: 'Renamed Team'
+      })
+    );
     expect(handle.waitForSaved).toHaveBeenCalledTimes(1);
     expect(store.rename).toHaveBeenCalledWith(updatedTeam.id, 'Renamed Team');
     expect(store.updateMetadata).toHaveBeenCalledWith(
       expect.objectContaining({ team: updatedTeam, updatedAt: updatedTeam.updatedAt })
     );
-    expect(jest.mocked(handle.updateTeam).mock.invocationCallOrder[0]).toBeLessThan(
+    expect(jest.mocked(handle.editTeam).mock.invocationCallOrder[0]).toBeLessThan(
       jest.mocked(handle.waitForSaved).mock.invocationCallOrder[0]
     );
     expect(jest.mocked(handle.waitForSaved).mock.invocationCallOrder[0]).toBeLessThan(
@@ -210,9 +227,9 @@ describe('TeamRepository', () => {
     const repository = new TeamRepository(storage, store);
 
     await expect(
-      repository.updateTeamDocument(handle, fixtureUser, fixtureDocument.team)
+      repository.editTeamDocument(handle, fixtureUser, fixtureDocument.team, fixtureDocument.team)
     ).rejects.toMatchObject({ code: 'host-mismatch' });
-    expect(handle.updateTeam).not.toHaveBeenCalled();
+    expect(handle.editTeam).not.toHaveBeenCalled();
     expect(handle.waitForSaved).not.toHaveBeenCalled();
     expect(store.rename).not.toHaveBeenCalled();
     expect(store.updateMetadata).not.toHaveBeenCalled();
